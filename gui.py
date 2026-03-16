@@ -1363,7 +1363,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         app_name.setFont(QFont('Microsoft YaHei', int(16 * self.scale_factor), QFont.Bold))
         info_layout.addWidget(app_name)
         
-        version = QLabel('版本: 1.0.24')
+        version = QLabel('版本: 1.0.4')
         version.setStyleSheet("color: #666666;")
         info_layout.addWidget(version)
         
@@ -1631,6 +1631,42 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                     # 复制原nfo文件
                     shutil.copy2(nfo_path, new_nfo_path)
                     
+                    # 修改NFO文件内容
+                    try:
+                        with open(new_nfo_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        import re
+                        
+                        # 修改title标签内容，去掉 - S01EXX 后缀
+                        pattern = r'(<title>)[^<]+(</title>)'
+                        replacement = r'\1' + original_name + r'\2'
+                        content = re.sub(pattern, replacement, content, count=1)
+                        
+                        # 将 <movie> 标签转换为 <episodedetails>
+                        content = content.replace('<movie>', '<episodedetails>')
+                        content = content.replace('</movie>', '</episodedetails>')
+                        
+                        # 在 <episodedetails> 后添加 season、episode 和 episode_groups 标签
+                        episode_details_pattern = r'(<episodedetails>)'
+                        season = 1
+                        episode = i
+                        
+                        episode_groups_content = f'''    <season>{season}</season>
+    <episode>{episode}</episode>
+    <episode_groups>
+        <group episode="{episode}" id="AIRED" name="" season="{season}"/>
+    </episode_groups>
+'''
+                        
+                        replacement = r'\1\n' + episode_groups_content
+                        content = re.sub(episode_details_pattern, replacement, content)
+                        
+                        with open(new_nfo_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                    except Exception as e:
+                        print(f"修改NFO文件失败 {new_nfo_path}: {e}")
+                    
                     # 保存第一个电影的nfo路径
                     if i == 1:
                         first_movie_nfo_path = new_nfo_path
@@ -1638,14 +1674,19 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                     # 如果原nfo文件不存在，创建一个新的
                     # 提取原nfo文件中的plot内容
                     plot_content = movie.overview or ''
-                    # 创建基本的nfo结构
+                    # 创建基本的nfo结构，使用episodedetails标签
                     nfo_content = f'''
 <?xml version="1.0" encoding="UTF-8"?>
-<movie>
+<episodedetails>
     <title>{original_name}</title>
     <year>{movie.year or ''}</year>
     <plot>{plot_content}</plot>
-</movie>
+    <season>1</season>
+    <episode>{i}</episode>
+    <episode_groups>
+        <group episode="{i}" id="AIRED" name="" season="1"/>
+    </episode_groups>
+</episodedetails>
 '''
                     with open(new_nfo_path, 'w', encoding='utf-8') as f:
                         f.write(nfo_content)

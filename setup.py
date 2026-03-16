@@ -27,7 +27,6 @@ include_files = [
     (os.path.join(current_dir, "api.py"), "api.py"),
     (os.path.join(current_dir, "scanner.py"), "scanner.py"),
     (os.path.join(current_dir, "gui.py"), "gui.py"),
-    (os.path.join(current_dir, "李先生ol.png"), "李先生ol.png"),
     (platforms_dir, "platforms"),
     (imageformats_dir, "imageformats"),
 ]
@@ -41,7 +40,7 @@ for source, target in include_files:
 
 setup(
     name="Movie Scraper",
-    version="1.0",
+    version="1.0.4",
     description="本地电影刮削工具",
     executables=[
         Executable(
