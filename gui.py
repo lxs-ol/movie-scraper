@@ -17,6 +17,7 @@ from PyQt5.QtGui import QPixmap, QIcon, QFont, QImage
 from typing import List, Optional, Dict
 from api import TMDBAPI, MovieInfo
 from scanner import LocalMovieScanner, LocalMovie, LocalSeries
+from updater import AutoUpdater
 
 class TVSeriesScrapeThread(QThread):
     progress_update = pyqtSignal(int, int, str)
@@ -735,6 +736,9 @@ class MovieScraperGUI(QMainWindow):
         self.load_config()
         
         self.setup_ui()
+        
+        self.auto_updater = AutoUpdater(self)
+        QTimer.singleShot(2000, lambda: self.auto_updater.check_for_updates(silent=True))
     
     def _init_dpi_scaling(self):
         screen = QApplication.primaryScreen()
@@ -874,6 +878,13 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         layout.addWidget(search_btn)
         
         layout.addStretch()
+        
+        check_update_btn = QPushButton('🔄 检查更新')
+        check_update_btn.clicked.connect(self.check_for_updates)
+        check_update_btn.setMaximumHeight(int(28 * self.scale_factor))
+        check_update_btn.setMinimumHeight(int(28 * self.scale_factor))
+        check_update_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        layout.addWidget(check_update_btn)
         
         about_btn = QPushButton('ℹ️ 关于')
         about_btn.clicked.connect(self.show_about)
@@ -3903,6 +3914,11 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
     def show_settings(self):
         dialog = SettingsDialog(self, self.api, self.config_file)
         dialog.exec_()
+    
+    def check_for_updates(self):
+        """手动检查更新"""
+        if hasattr(self, 'auto_updater'):
+            self.auto_updater.check_for_updates(silent=False)
     
     def show_about(self):
         about_dialog = QDialog(self)

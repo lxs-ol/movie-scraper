@@ -27,6 +27,7 @@ include_files = [
     (os.path.join(current_dir, "api.py"), "api.py"),
     (os.path.join(current_dir, "scanner.py"), "scanner.py"),
     (os.path.join(current_dir, "gui.py"), "gui.py"),
+    (os.path.join(current_dir, "updater.py"), "updater.py"),
     (platforms_dir, "platforms"),
     (imageformats_dir, "imageformats"),
 ]
