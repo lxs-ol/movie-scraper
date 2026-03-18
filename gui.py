@@ -1744,8 +1744,30 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             self.selection_label.setText(f'共 {len(self.filtered_series)} 个电视剧')
     
     def clear_local_search(self):
+        """清除搜索和列表"""
+        # 清空搜索框
         self.local_search_input.clear()
-        self.filter_local_movies()
+        
+        # 清空列表数据
+        self.local_movies = []
+        self.local_series = []
+        self.filtered_movies = []
+        self.filtered_series = []
+        
+        # 清空媒体树
+        self.media_tree.clear()
+        
+        # 清空当前选择
+        self.current_movie = None
+        self.current_series = None
+        
+        # 更新选择标签
+        self.selection_label.setText('未选择')
+        
+        # 清空详情视图
+        self.reset_edit_form()
+        
+        print("已清除所有列表数据")
     
     def update_detail_view(self, movie: LocalMovie):
         # 尝试加载本地海报
