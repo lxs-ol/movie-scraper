@@ -1850,8 +1850,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                 thumb_loaded = True
             
             if not thumb_loaded:
-                # 尝试多种缩略图命名格式
-                thumb_names = ['thumb', 'poster', 'thumbnail', 'cover']
+                # 尝试多种缩略图命名格式 - 电影通常使用 poster.jpg 或 thumb.jpg
+                thumb_names = ['poster', 'thumb', 'thumbnail', 'cover']
                 for name in thumb_names:
                     for ext in image_extensions:
                         thumb_path = os.path.join(media_dir, f"{name}{ext}")
@@ -1874,8 +1874,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                 backdrop_loaded = True
             
             if not backdrop_loaded:
-                # 尝试多种背景图命名格式
-                backdrop_names = ['background', 'backdrop', 'fanart', 'bg']
+                # 尝试多种背景图命名格式 - 电影通常使用 backdrop.jpg 或 fanart.jpg
+                backdrop_names = ['backdrop', 'fanart', 'background', 'bg']
                 for name in backdrop_names:
                     for ext in image_extensions:
                         backdrop_path = os.path.join(media_dir, f"{name}{ext}")
