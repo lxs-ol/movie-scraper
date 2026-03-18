@@ -1839,37 +1839,90 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             media_dir = os.path.dirname(media.path)
             print(f"媒体目录: {media_dir}")
             
-            # 加载背景图片 - 只加载本地图片
-            backdrop_path = os.path.join(media_dir, "background.jpg")
-            if os.path.exists(backdrop_path):
-                print(f"加载本地背景图片: {backdrop_path}")
-                self._load_local_image(backdrop_path, self.backdrop_label)
-            else:
+            # 图片扩展名列表
+            image_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif']
+            
+            # 加载缩略图 - 优先使用 poster_path
+            thumb_loaded = False
+            if hasattr(media, 'poster_path') and media.poster_path and os.path.exists(media.poster_path):
+                print(f"加载 poster_path 缩略图: {media.poster_path}")
+                self._load_local_image(media.poster_path, self.thumbnail_label)
+                thumb_loaded = True
+            
+            if not thumb_loaded:
+                # 尝试多种缩略图命名格式
+                thumb_names = ['thumb', 'poster', 'thumbnail', 'cover']
+                for name in thumb_names:
+                    for ext in image_extensions:
+                        thumb_path = os.path.join(media_dir, f"{name}{ext}")
+                        if os.path.exists(thumb_path):
+                            print(f"加载本地缩略图: {thumb_path}")
+                            self._load_local_image(thumb_path, self.thumbnail_label)
+                            thumb_loaded = True
+                            break
+                    if thumb_loaded:
+                        break
+            
+            if not thumb_loaded:
+                print("本地缩略图不存在")
+            
+            # 加载背景图片 - 优先使用 backdrop_path
+            backdrop_loaded = False
+            if hasattr(media, 'backdrop_path') and media.backdrop_path and os.path.exists(media.backdrop_path):
+                print(f"加载 backdrop_path 背景图片: {media.backdrop_path}")
+                self._load_local_image(media.backdrop_path, self.backdrop_label)
+                backdrop_loaded = True
+            
+            if not backdrop_loaded:
+                # 尝试多种背景图命名格式
+                backdrop_names = ['background', 'backdrop', 'fanart', 'bg']
+                for name in backdrop_names:
+                    for ext in image_extensions:
+                        backdrop_path = os.path.join(media_dir, f"{name}{ext}")
+                        if os.path.exists(backdrop_path):
+                            print(f"加载本地背景图片: {backdrop_path}")
+                            self._load_local_image(backdrop_path, self.backdrop_label)
+                            backdrop_loaded = True
+                            break
+                    if backdrop_loaded:
+                        break
+            
+            if not backdrop_loaded:
                 print("本地背景图片不存在")
             
-            # 加载Banner图片 - 只加载本地图片
-            banner_path = os.path.join(media_dir, "banner.jpg")
-            if os.path.exists(banner_path):
-                print(f"加载本地Banner图片: {banner_path}")
-                self._load_local_image(banner_path, self.banner_label)
-            else:
+            # 加载Banner图片
+            banner_loaded = False
+            banner_names = ['banner']
+            for name in banner_names:
+                for ext in image_extensions:
+                    banner_path = os.path.join(media_dir, f"{name}{ext}")
+                    if os.path.exists(banner_path):
+                        print(f"加载本地Banner图片: {banner_path}")
+                        self._load_local_image(banner_path, self.banner_label)
+                        banner_loaded = True
+                        break
+                if banner_loaded:
+                    break
+            
+            if not banner_loaded:
                 print("本地Banner图片不存在")
             
-            # 加载Logo - 只加载本地图片
-            logo_path = os.path.join(media_dir, "logo.png")
-            if os.path.exists(logo_path):
-                print(f"加载本地Logo图片: {logo_path}")
-                self._load_local_image(logo_path, self.logo_label)
-            else:
-                print("本地Logo图片不存在")
+            # 加载Logo图片
+            logo_loaded = False
+            logo_names = ['logo', 'clearlogo']
+            for name in logo_names:
+                for ext in image_extensions:
+                    logo_path = os.path.join(media_dir, f"{name}{ext}")
+                    if os.path.exists(logo_path):
+                        print(f"加载本地Logo图片: {logo_path}")
+                        self._load_local_image(logo_path, self.logo_label)
+                        logo_loaded = True
+                        break
+                if logo_loaded:
+                    break
             
-            # 加载缩略图 - 只加载本地图片
-            thumb_path = os.path.join(media_dir, "thumb.jpg")
-            if os.path.exists(thumb_path):
-                print(f"加载本地缩略图: {thumb_path}")
-                self._load_local_image(thumb_path, self.thumbnail_label)
-            else:
-                print("本地缩略图不存在")
+            if not logo_loaded:
+                print("本地Logo图片不存在")
             
             print("图片加载完成")
         except Exception as e:
