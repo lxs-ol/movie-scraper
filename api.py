@@ -56,6 +56,10 @@ class TMDBAPI:
     
     def _setup_proxy(self, proxy_config: dict):
         try:
+            if not proxy_config:
+                logging.warning("代理配置为空，跳过代理设置")
+                return
+            
             proxy_type = proxy_config.get('type', 'http')
             host = proxy_config.get('host', '')
             port = proxy_config.get('port', '')
@@ -86,11 +90,19 @@ class TMDBAPI:
                     'https': f'http://{proxy_url}'
                 }
             
+            # 清除之前的代理设置
+            self.session.proxies.clear()
             self.session.proxies.update(proxies)
             logging.info(f"代理设置完成: {proxies}")
             logging.info(f"当前session代理: {self.session.proxies}")
         except Exception as e:
             logging.error(f"代理设置失败: {e}")
+            # 发生错误时清除代理设置，避免影响后续请求
+            try:
+                self.session.proxies.clear()
+                logging.info("已清除代理设置")
+            except:
+                pass
     
     def set_api_key(self, api_key: str):
         self.api_key = api_key
@@ -110,27 +122,36 @@ class TMDBAPI:
         if params:
             default_params.update(params)
         
-        try:
-            # 尝试HTTPS请求
-            response = self.session.get(url, params=default_params, timeout=10)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.SSLError as ssl_e:
-            logging.warning(f"SSL错误，尝试跳过验证: {ssl_e}")
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                # SSL错误时尝试跳过验证
-                response = self.session.get(url, params=default_params, timeout=10, verify=False)
+                # 尝试HTTPS请求
+                response = self.session.get(url, params=default_params, timeout=15)
                 response.raise_for_status()
                 return response.json()
-            except Exception as e2:
-                logging.error(f"API 请求失败(跳过SSL验证后): {e2}")
-                return None
-        except requests.exceptions.ProxyError as proxy_e:
-            logging.error(f"代理错误: {proxy_e}")
-            return None
-        except requests.exceptions.RequestException as e:
-            logging.error(f"API 请求失败: {e}")
-            return None
+            except requests.exceptions.SSLError as ssl_e:
+                logging.warning(f"SSL错误，尝试跳过验证: {ssl_e}")
+                try:
+                    # SSL错误时尝试跳过验证
+                    response = self.session.get(url, params=default_params, timeout=15, verify=False)
+                    response.raise_for_status()
+                    return response.json()
+                except Exception as e2:
+                    logging.error(f"API 请求失败(跳过SSL验证后): {e2}")
+                    if attempt == max_retries - 1:
+                        return None
+                    time.sleep(1)
+            except requests.exceptions.ProxyError as proxy_e:
+                logging.error(f"代理错误: {proxy_e}")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(2)
+            except requests.exceptions.RequestException as e:
+                logging.error(f"API 请求失败: {e}")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(1)
+        return None
     
     def search_movie(self, query: str, page: int = 1) -> List[MovieInfo]:
         logging.info(f"搜索电影: {query}")
@@ -222,10 +243,36 @@ class TMDBAPI:
         logging.info(f"获取TV详情: {tv_id}")
         return self._make_request(f'tv/{tv_id}')
     
+    def get_episode_details(self, tv_id: int, season_number: int, episode_number: int) -> Optional[dict]:
+        """获取集详细信息"""
+        logging.info(f"获取集详情: TV ID={tv_id}, S{season_number:02d}E{episode_number:02d}")
+        return self._make_request(f'tv/{tv_id}/season/{season_number}/episode/{episode_number}')
+    
+    def get_still_url(self, still_path: str, size: str = 'w500') -> str:
+        """获取集剧照URL"""
+        if not still_path:
+            return ''
+        return f"{self.image_base_url}/{size}{still_path}"
+    
     def get_poster_url(self, poster_path: str, size: str = 'w500') -> str:
         if not poster_path:
             return ''
         return f"{self.image_base_url}/{size}{poster_path}"
+    
+    def get_backdrop_url(self, backdrop_path: str, size: str = 'w1280') -> str:
+        if not backdrop_path:
+            return ''
+        return f"{self.image_base_url}/{size}{backdrop_path}"
+    
+    def get_logo_url(self, logo_path: str, size: str = 'w500') -> str:
+        if not logo_path:
+            return ''
+        return f"{self.image_base_url}/{size}{logo_path}"
+    
+    def get_banner_url(self, banner_path: str, size: str = 'w1280') -> str:
+        if not banner_path:
+            return ''
+        return f"{self.image_base_url}/{size}{banner_path}"
     
     def download_image(self, url: str, save_path: str) -> bool:
         try:
@@ -306,3 +353,11 @@ class TMDBAPI:
     def get_collection_details(self, collection_id: int) -> Optional[dict]:
         logging.info(f"获取合集详情: {collection_id}")
         return self._make_request(f'collection/{collection_id}')
+    
+    def get_tv_episode_details(self, tv_id: int, season_num: int, episode_num: int) -> Optional[dict]:
+        logging.info(f"获取TV剧集详情: {tv_id} S{season_num}E{episode_num}")
+        return self._make_request(f'tv/{tv_id}/season/{season_num}/episode/{episode_num}')
+    
+    def get_tv_season_details(self, tv_id: int, season_num: int) -> Optional[dict]:
+        logging.info(f"获取TV季详情: {tv_id} S{season_num}")
+        return self._make_request(f'tv/{tv_id}/season/{season_num}')

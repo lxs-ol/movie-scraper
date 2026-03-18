@@ -78,6 +78,207 @@ class LocalMovieScanner:
         
         return self.series
     
+    def scan_directory_iter(self, directory: str, recursive: bool = True):
+        """迭代器版本的扫描方法，用于实时加载"""
+        directory = Path(directory)
+        
+        if not directory.exists():
+            return
+        
+        if recursive:
+            for item in directory.iterdir():
+                if item.is_dir():
+                    movie = self._process_movie_folder_yield(item)
+                    if movie:
+                        yield movie
+                elif item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                    movie = self._process_video_file_yield(item)
+                    if movie:
+                        yield movie
+        else:
+            for item in directory.iterdir():
+                if item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                    movie = self._process_video_file_yield(item)
+                    if movie:
+                        yield movie
+    
+    def scan_series_directory_iter(self, directory: str, recursive: bool = True):
+        """迭代器版本的扫描方法，用于实时加载"""
+        directory = Path(directory)
+        
+        if not directory.exists():
+            return
+        
+        if recursive:
+            for item in directory.iterdir():
+                if item.is_dir():
+                    series = self._process_series_folder_yield(item)
+                    if series:
+                        yield series
+        else:
+            for item in directory.iterdir():
+                if item.is_dir():
+                    series = self._process_series_folder_yield(item)
+                    if series:
+                        yield series
+    
+    def _process_movie_folder_yield(self, directory: Path):
+        """处理电影文件夹并返回电影对象"""
+        video_files = []
+        for item in directory.iterdir():
+            if item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                video_files.append(item)
+        
+        if not video_files:
+            return None
+        
+        main_video = video_files[0]
+        return self._create_movie_from_video(main_video, directory)
+    
+    def _process_video_file_yield(self, video_file: Path):
+        """处理视频文件并返回电影对象"""
+        return self._create_movie_from_video(video_file, video_file.parent)
+    
+    def _create_movie_from_video(self, video_file: Path, directory: Path):
+        """从视频文件创建电影对象"""
+        movie = LocalMovie(
+            path=str(video_file),
+            name=video_file.stem
+        )
+        
+        nfo_files = list(directory.glob("*.nfo"))
+        if nfo_files:
+            movie.nfo_path = str(nfo_files[0])
+            self._parse_movie_nfo(movie, nfo_files[0])
+        
+        poster_files = list(directory.glob("poster.jpg")) + list(directory.glob("folder.jpg"))
+        if poster_files:
+            movie.poster_path = str(poster_files[0])
+        
+        backdrop_files = list(directory.glob("background.jpg")) + list(directory.glob("backdrop.jpg")) + list(directory.glob("fanart.jpg"))
+        if backdrop_files:
+            movie.backdrop_path = str(backdrop_files[0])
+        
+        return movie
+    
+    def _process_series_folder_yield(self, directory: Path):
+        """处理电视剧文件夹并返回电视剧对象"""
+        series = LocalSeries(
+            path=str(directory),
+            name=directory.name
+        )
+        
+        nfo_files = list(directory.glob("*.nfo"))
+        if nfo_files:
+            series.nfo_path = str(nfo_files[0])
+            self._parse_series_nfo(series, nfo_files[0])
+        
+        poster_files = list(directory.glob("poster.jpg")) + list(directory.glob("folder.jpg"))
+        if poster_files:
+            series.poster_path = str(poster_files[0])
+        
+        backdrop_files = list(directory.glob("background.jpg")) + list(directory.glob("backdrop.jpg")) + list(directory.glob("fanart.jpg"))
+        if backdrop_files:
+            series.backdrop_path = str(backdrop_files[0])
+        
+        self._process_series_directory_yield(directory, series)
+        return series
+    
+    def _process_series_directory_yield(self, directory: Path, series: LocalSeries):
+        """处理电视剧目录中的季和集"""
+        season_pattern = re.compile(r'(?i)season\s*(\d+)|s(\d+)|第\s*(\d+)\s*季')
+        
+        for item in directory.iterdir():
+            if item.is_dir():
+                match = season_pattern.search(item.name)
+                if match:
+                    season_num = int(match.group(1) or match.group(2) or match.group(3))
+                    season_data = {'season': season_num, 'episodes': []}
+                    
+                    for video_file in item.iterdir():
+                        if video_file.is_file() and video_file.suffix.lower() in self.VIDEO_EXTENSIONS:
+                            episode = self._parse_episode_file(video_file)
+                            season_data['episodes'].append(episode)
+                    
+                    season_data['episodes'].sort(key=lambda x: x.get('episode', 0))
+                    series.seasons.append(season_data)
+            elif item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                episode = self._parse_episode_file(item)
+                if episode:
+                    if not series.seasons:
+                        series.seasons.append({'season': 1, 'episodes': []})
+                    series.seasons[0]['episodes'].append(episode)
+        
+        series.seasons.sort(key=lambda x: x.get('season', 0))
+        for season in series.seasons:
+            season['episodes'].sort(key=lambda x: x.get('episode', 0))
+    
+    def _parse_episode_file(self, video_file: Path):
+        """解析剧集文件"""
+        episode_pattern = re.compile(r'(?i)(?:e|episode|ep)\s*(\d+)')
+        match = episode_pattern.search(video_file.stem)
+        episode_num = int(match.group(1)) if match else 0
+        
+        return {
+            'path': str(video_file),
+            'name': video_file.stem,
+            'episode': episode_num
+        }
+    
+    def _parse_movie_nfo(self, movie: LocalMovie, nfo_file: Path):
+        """解析电影NFO文件"""
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(nfo_file)
+            root = tree.getroot()
+            
+            movie.title = root.findtext('title') or movie.name
+            movie.overview = root.findtext('plot') or root.findtext('outline')
+            movie.tmdb_id = int(root.findtext('tmdbid')) if root.findtext('tmdbid') else None
+            movie.vote_average = float(root.findtext('rating')) if root.findtext('rating') else None
+            movie.year = root.findtext('year') or root.findtext('premiered')
+            
+            genres = root.findall('genre')
+            movie.genres = [g.text for g in genres if g.text]
+            
+            movie.info = {
+                'title': movie.title,
+                'overview': movie.overview,
+                'tmdb_id': movie.tmdb_id,
+                'vote_average': movie.vote_average,
+                'year': movie.year,
+                'genres': movie.genres
+            }
+        except Exception as e:
+            print(f"解析电影NFO文件失败: {e}")
+    
+    def _parse_series_nfo(self, series: LocalSeries, nfo_file: Path):
+        """解析电视剧NFO文件"""
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(nfo_file)
+            root = tree.getroot()
+            
+            series.title = root.findtext('title') or series.name
+            series.overview = root.findtext('plot') or root.findtext('outline')
+            series.tmdb_id = int(root.findtext('tmdbid')) if root.findtext('tmdbid') else None
+            series.vote_average = float(root.findtext('rating')) if root.findtext('rating') else None
+            series.year = root.findtext('year') or root.findtext('premiered')
+            
+            genres = root.findall('genre')
+            series.genres = [g.text for g in genres if g.text]
+            
+            series.info = {
+                'title': series.title,
+                'overview': series.overview,
+                'tmdb_id': series.tmdb_id,
+                'vote_average': series.vote_average,
+                'year': series.year,
+                'genres': series.genres
+            }
+        except Exception as e:
+            print(f"解析电视剧NFO文件失败: {e}")
+    
     def _scan_recursive(self, directory: Path):
         for item in directory.iterdir():
             if item.is_dir():
@@ -93,18 +294,44 @@ class LocalMovieScanner:
     def _scan_series_recursive(self, directory: Path):
         for item in directory.iterdir():
             if item.is_dir():
+                # 检查当前目录是否是电视剧目录
+                is_series_dir = False
+                
+                # 检查是否包含季节目录
                 has_seasons = False
-                has_videos = False
-                
                 for subitem in item.iterdir():
-                    if subitem.is_dir() and (subitem.name.lower().startswith('season') or '季' in subitem.name):
-                        has_seasons = True
-                    elif subitem.is_file() and subitem.suffix.lower() in self.VIDEO_EXTENSIONS:
-                        has_videos = True
+                    if subitem.is_dir():
+                        # 更灵活的季节目录识别
+                        if (subitem.name.lower().startswith('season') or 
+                            '季' in subitem.name or 
+                            'season' in subitem.name.lower() or
+                            re.search(r'S\d+', subitem.name, re.IGNORECASE)):
+                            has_seasons = True
+                            break
                 
-                if has_seasons or has_videos:
+                # 检查是否包含视频文件
+                has_videos = False
+                for subitem in item.iterdir():
+                    if subitem.is_file() and subitem.suffix.lower() in self.VIDEO_EXTENSIONS:
+                        has_videos = True
+                        break
+                
+                # 检查是否包含嵌套的视频文件（递归检查一层）
+                has_nested_videos = False
+                if not has_videos:
+                    for subitem in item.iterdir():
+                        if subitem.is_dir():
+                            for nested_item in subitem.iterdir():
+                                if nested_item.is_file() and nested_item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                                    has_nested_videos = True
+                                    break
+                            if has_nested_videos:
+                                break
+                
+                if has_seasons or has_videos or has_nested_videos:
                     self._process_series_directory(item)
                 else:
+                    # 继续递归扫描
                     self._scan_series_recursive(item)
     
     def _scan_series_flat(self, directory: Path):
@@ -118,8 +345,10 @@ class LocalMovieScanner:
             name=series_dir.name
         )
         
+        # 解析电视剧名称和年份
         self._parse_movie_name(series, series_dir.name)
         
+        # 查找 NFO 文件
         nfo_file = None
         for ext in ['.nfo', '.NFO']:
             nfo_path = series_dir / f"{series_dir.name}{ext}"
@@ -137,6 +366,7 @@ class LocalMovieScanner:
             series.nfo_path = str(nfo_file)
             self._load_nfo_info(series, nfo_file)
         
+        # 查找海报文件
         poster_file = None
         for ext in ['.jpg', '.jpeg', '.png', '.webp']:
             for name in ['poster', 'folder', 'cover', 'Series']:
@@ -150,6 +380,7 @@ class LocalMovieScanner:
         if poster_file:
             series.poster_path = str(poster_file)
         
+        # 查找背景文件
         backdrop_file = None
         for ext in ['.jpg', '.jpeg', '.png', '.webp']:
             for name in ['backdrop', 'fanart', 'banner']:
@@ -164,42 +395,185 @@ class LocalMovieScanner:
             series.backdrop_path = str(backdrop_file)
         
         seasons = []
+        
+        # 遍历目录，识别季和集
         for item in series_dir.iterdir():
             if item.is_dir():
                 season_name = item.name
                 season_number = self._extract_season_number(season_name)
+                
+                # 如果能够识别出季号
                 if season_number is not None:
                     episodes = []
+                    season_nfo_file = None
+                    
+                    # 查找季的nfo文件
+                    for ext in ['.nfo', '.NFO']:
+                        season_nfo_path = item / f"{item.name}{ext}"
+                        if season_nfo_path.exists():
+                            season_nfo_file = season_nfo_path
+                            break
+                    
+                    if not season_nfo_file:
+                        for subitem in item.iterdir():
+                            if subitem.is_file() and subitem.suffix.lower() == '.nfo':
+                                season_nfo_file = subitem
+                                break
+                    
                     for subitem in item.iterdir():
                         if subitem.is_file() and subitem.suffix.lower() in self.VIDEO_EXTENSIONS:
                             episode_number = self._extract_episode_number(subitem.name)
-                            episodes.append({
+                            
+                            # 查找集的nfo文件
+                            episode_nfo_file = None
+                            for ext in ['.nfo', '.NFO']:
+                                episode_nfo_path = item / f"{subitem.stem}{ext}"
+                                if episode_nfo_path.exists():
+                                    episode_nfo_file = episode_nfo_path
+                                    break
+                            
+                            episode_data = {
                                 'path': str(subitem),
                                 'name': subitem.name,
                                 'episode': episode_number
-                            })
-                    seasons.append({
+                            }
+                            
+                            if episode_nfo_file:
+                                episode_data['nfo_path'] = str(episode_nfo_file)
+                            
+                            episodes.append(episode_data)
+                    
+                    season_data = {
                         'season': season_number,
                         'name': season_name,
                         'episodes': episodes
-                    })
+                    }
+                    
+                    if season_nfo_file:
+                        season_data['nfo_path'] = str(season_nfo_file)
+                    
+                    seasons.append(season_data)
+                else:
+                    # 检查是否是嵌套的季节目录（例如：Season 1\Episode 1）
+                    # 或者直接包含视频文件的目录
+                    nested_episodes = []
+                    has_videos = False
+                    nested_nfo_file = None
+                    
+                    # 查找嵌套目录的nfo文件
+                    for subitem in item.iterdir():
+                        if subitem.is_file() and subitem.suffix.lower() == '.nfo':
+                            nested_nfo_file = subitem
+                            break
+                    
+                    for subitem in item.iterdir():
+                        if subitem.is_file() and subitem.suffix.lower() in self.VIDEO_EXTENSIONS:
+                            episode_number = self._extract_episode_number(subitem.name)
+                            
+                            # 查找集的nfo文件
+                            episode_nfo_file = None
+                            for ext in ['.nfo', '.NFO']:
+                                episode_nfo_path = item / f"{subitem.stem}{ext}"
+                                if episode_nfo_path.exists():
+                                    episode_nfo_file = episode_nfo_path
+                                    break
+                            
+                            episode_data = {
+                                'path': str(subitem),
+                                'name': subitem.name,
+                                'episode': episode_number
+                            }
+                            
+                            if episode_nfo_file:
+                                episode_data['nfo_path'] = str(episode_nfo_file)
+                            
+                            nested_episodes.append(episode_data)
+                            has_videos = True
+                    
+                    if has_videos:
+                        # 为嵌套目录分配默认季号
+                        season_data = {
+                            'season': len(seasons) + 1,  # 从1开始递增
+                            'name': season_name,
+                            'episodes': nested_episodes
+                        }
+                        
+                        if nested_nfo_file:
+                            season_data['nfo_path'] = str(nested_nfo_file)
+                        
+                        seasons.append(season_data)
+        
+        # 如果没有识别到季节目录，但直接包含视频文件
+        if not seasons:
+            root_episodes = []
+            for item in series_dir.iterdir():
+                if item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                    episode_number = self._extract_episode_number(item.name)
+                    
+                    # 查找集的nfo文件
+                    episode_nfo_file = None
+                    for ext in ['.nfo', '.NFO']:
+                        episode_nfo_path = series_dir / f"{item.stem}{ext}"
+                        if episode_nfo_path.exists():
+                            episode_nfo_file = episode_nfo_path
+                            break
+                    
+                    episode_data = {
+                        'path': str(item),
+                        'name': item.name,
+                        'episode': episode_number
+                    }
+                    
+                    if episode_nfo_file:
+                        episode_data['nfo_path'] = str(episode_nfo_file)
+                    
+                    root_episodes.append(episode_data)
+            
+            if root_episodes:
+                seasons.append({
+                    'season': 1,  # 默认第1季
+                    'name': 'Season 1',
+                    'episodes': root_episodes
+                })
         
         series.seasons = seasons
         self.series.append(series)
     
     def _extract_season_number(self, name: str) -> Optional[int]:
-        match = re.search(r'Season\s*(\d+)|季\s*(\d+)', name, re.IGNORECASE)
-        if match:
-            return int(match.group(1) or match.group(2))
+        # 匹配 Season 1, 季 1, S01 等格式
+        patterns = [
+            r'Season\s*(\d+)',  # Season 1
+            r'季\s*(\d+)',       # 季 1
+            r'S(\d+)',           # S01
+            r'第(\d+)季',        # 第1季
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, name, re.IGNORECASE)
+            if match:
+                try:
+                    return int(match.group(1))
+                except (ValueError, IndexError):
+                    continue
         return None
     
     def _extract_episode_number(self, name: str) -> Optional[int]:
-        match = re.search(r'Episode\s*(\d+)|第\s*(\d+)\s*集', name, re.IGNORECASE)
-        if match:
-            return int(match.group(1) or match.group(2))
-        match = re.search(r'S(\d+)E(\d+)', name, re.IGNORECASE)
-        if match:
-            return int(match.group(2))
+        # 匹配 Episode 1, 第1集, S01E01 等格式
+        patterns = [
+            r'Episode\s*(\d+)',  # Episode 1
+            r'第\s*(\d+)\s*集',   # 第1集
+            r'S\d+E(\d+)',       # S01E01
+            r'E(\d+)',            # E01
+            r'第(\d+)集',         # 第1集
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, name, re.IGNORECASE)
+            if match:
+                try:
+                    return int(match.group(1))
+                except (ValueError, IndexError):
+                    continue
         return None
     
     def _process_movie_folder(self, folder: Path):
@@ -567,8 +941,8 @@ class LocalMovieScanner:
         
         nfo_path = os.path.join(directory, nfo_filename)
         
-        collection_id = info.get('collection_id') or movie.collection_id
-        collection_name = info.get('collection_name') or movie.collection_name
+        collection_id = info.get('collection_id') or getattr(movie, 'collection_id', None)
+        collection_name = info.get('collection_name') or getattr(movie, 'collection_name', None)
         
         nfo_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <movie>
