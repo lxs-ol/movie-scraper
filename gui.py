@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QProgressBar, QDialog, QDialogButtonBox, QInputDialog,
     QSizePolicy, QTreeWidget, QTreeWidgetItem, QMenu
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QImage
 from typing import List, Optional, Dict
 from api import TMDBAPI, MovieInfo
