@@ -453,9 +453,9 @@ class EpisodeStillDownloadThread(QThread):
                                 still_url = self.api.get_still_url(still_path, 'w500')
                                 
                                 if still_url:
-                                    # 保存为集缩略图
-                                    # 使用用户自定义格式：电视剧名 S01E01 第X集-thumb.jpg
-                                    thumb_save_path = os.path.join(episode_dir, f"{series_name} S{season_num:02d}E{episode_num:02d} 第{episode_num}集-thumb.jpg")
+                                    # 保存为集缩略图 - 使用集文件名作为基础
+                                    # 例如：幽遊白書_S01E01_第 1 集.STRM -> 幽遊白書_S01E01_第 1 集-thumb.jpg
+                                    thumb_save_path = os.path.join(episode_dir, f"{episode_base}-thumb.jpg")
                                     
                                     print(f"    下载到: {thumb_save_path}")
                                     
