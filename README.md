@@ -15,7 +15,7 @@
 
  <div align="center">
    <p><strong>movie系列可以转tv模式</strong></p>
-  <img src="说明图片/movie电影系列转tv模式 .png">
+  <img src="说明图片/movie电影系列转tv模式.png">
   <br>
  </div>
 
