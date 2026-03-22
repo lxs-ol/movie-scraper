@@ -166,7 +166,7 @@ python setup.py build
 
 - **GUI 框架**：PyQt5
 - **API 请求**：requests
-- **打包工具**：cx-Freeze
+- **打包工具**：Inno Setup 6
 - **数据来源**：The Movie Database (TMDB)
 
 ## 许可证
