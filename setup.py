@@ -28,6 +28,7 @@ include_files = [
     (os.path.join(current_dir, "scanner.py"), "scanner.py"),
     (os.path.join(current_dir, "gui.py"), "gui.py"),
     (os.path.join(current_dir, "updater.py"), "updater.py"),
+    (os.path.join(current_dir, "ai_helper.py"), "ai_helper.py"),
     (platforms_dir, "platforms"),
     (imageformats_dir, "imageformats"),
 ]
@@ -106,7 +107,7 @@ packages = [
 
 setup(
     name="Movie Scraper",
-    version="1.1.0",
+    version="1.1.6",
     description="本地电影刮削工具",
     executables=[
         Executable(

@@ -86,21 +86,60 @@ class LocalMovieScanner:
             return
         
         if recursive:
-            for item in directory.iterdir():
-                if item.is_dir():
-                    movie = self._process_movie_folder_yield(item)
-                    if movie:
-                        yield movie
-                elif item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
-                    movie = self._process_video_file_yield(item)
-                    if movie:
-                        yield movie
+            yield from self._scan_recursive_iter(directory)
         else:
             for item in directory.iterdir():
                 if item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
                     movie = self._process_video_file_yield(item)
                     if movie:
                         yield movie
+    
+    def _scan_recursive_iter(self, directory: Path, depth: int = 0):
+        """递归扫描目录的迭代器版本"""
+        indent = "  " * depth
+        print(f"{indent}扫描目录: {directory}")
+        
+        try:
+            items = list(directory.iterdir())
+        except Exception as e:
+            print(f"{indent}无法访问目录: {e}")
+            return
+        
+        for item in items:
+            if item.is_dir():
+                print(f"{indent}发现子目录: {item.name}")
+                # 检查目录是否包含视频文件
+                has_video = False
+                has_subdirs = False
+                
+                try:
+                    subitems = list(item.iterdir())
+                    for subitem in subitems:
+                        if subitem.is_file() and subitem.suffix.lower() in self.VIDEO_EXTENSIONS:
+                            has_video = True
+                            print(f"{indent}  发现视频文件: {subitem.name}")
+                        if subitem.is_dir():
+                            has_subdirs = True
+                except Exception as e:
+                    print(f"{indent}  扫描目录 {item.name} 时出错: {e}")
+                
+                # 如果目录包含视频文件，处理这个目录
+                if has_video:
+                    print(f"{indent}  处理目录(包含视频): {item.name}")
+                    movie = self._process_movie_folder_yield(item)
+                    if movie:
+                        yield movie
+                
+                # 继续递归扫描子目录（无论当前目录是否包含视频）
+                if has_subdirs:
+                    print(f"{indent}  递归扫描子目录: {item.name}")
+                    yield from self._scan_recursive_iter(item, depth + 1)
+                    
+            elif item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                print(f"{indent}处理根目录视频文件: {item.name}")
+                movie = self._process_video_file_yield(item)
+                if movie:
+                    yield movie
     
     def scan_series_directory_iter(self, directory: str, recursive: bool = True):
         """迭代器版本的扫描方法，用于实时加载"""
@@ -279,11 +318,46 @@ class LocalMovieScanner:
         except Exception as e:
             print(f"解析电视剧NFO文件失败: {e}")
     
-    def _scan_recursive(self, directory: Path):
-        for item in directory.iterdir():
+    def _scan_recursive(self, directory: Path, depth: int = 0):
+        indent = "  " * depth
+        print(f"{indent}扫描目录: {directory}")
+        
+        try:
+            items = list(directory.iterdir())
+        except Exception as e:
+            print(f"{indent}无法访问目录: {e}")
+            return
+        
+        for item in items:
             if item.is_dir():
-                self._process_movie_folder(item)
+                print(f"{indent}发现子目录: {item.name}")
+                # 检查目录是否包含视频文件
+                has_video = False
+                has_subdirs = False
+                
+                try:
+                    subitems = list(item.iterdir())
+                    for subitem in subitems:
+                        if subitem.is_file() and subitem.suffix.lower() in self.VIDEO_EXTENSIONS:
+                            has_video = True
+                            print(f"{indent}  发现视频文件: {subitem.name}")
+                        if subitem.is_dir():
+                            has_subdirs = True
+                except Exception as e:
+                    print(f"{indent}  扫描目录 {item.name} 时出错: {e}")
+                
+                # 如果目录包含视频文件，处理这个目录
+                if has_video:
+                    print(f"{indent}  处理目录(包含视频): {item.name}")
+                    self._process_movie_folder(item)
+                
+                # 继续递归扫描子目录（无论当前目录是否包含视频）
+                if has_subdirs:
+                    print(f"{indent}  递归扫描子目录: {item.name}")
+                    self._scan_recursive(item, depth + 1)
+                    
             elif item.is_file() and item.suffix.lower() in self.VIDEO_EXTENSIONS:
+                print(f"{indent}处理根目录视频文件: {item.name}")
                 self._process_video_file(item)
     
     def _scan_flat(self, directory: Path):
@@ -941,31 +1015,139 @@ class LocalMovieScanner:
         
         nfo_path = os.path.join(directory, nfo_filename)
         
+        def escape_xml(text):
+            if not text:
+                return ''
+            text = str(text)
+            text = text.replace('&', '&amp;')
+            text = text.replace('<', '&lt;')
+            text = text.replace('>', '&gt;')
+            text = text.replace('"', '&quot;')
+            text = text.replace("'", '&apos;')
+            return text
+        
         collection_id = info.get('collection_id') or getattr(movie, 'collection_id', None)
         collection_name = info.get('collection_name') or getattr(movie, 'collection_name', None)
         
+        title = escape_xml(info.get('title', movie.title or ''))
+        original_title = escape_xml(info.get('original_title', ''))
+        year = info.get('year', movie.year or '')
+        overview = escape_xml(info.get('overview', ''))
+        vote_average = info.get('vote_average', 0)
+        tmdb_id = info.get('tmdb_id') or info.get('id', '')
+        imdb_id = info.get('imdb_id', '')
+        runtime = info.get('runtime', '')
+        status = escape_xml(info.get('status', ''))
+        tagline = escape_xml(info.get('tagline', ''))
+        release_date = info.get('release_date', '')
+        original_language = escape_xml(info.get('original_language', ''))
+        budget = info.get('budget', 0)
+        revenue = info.get('revenue', 0)
+        
         nfo_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <movie>
-    <title>{info.get('title', movie.title or '')}</title>
-    <originaltitle>{info.get('original_title', '')}</originaltitle>
-    <year>{info.get('year', movie.year or '')}</year>
-    <plot>{info.get('overview', '')}</plot>
-    <rating>{info.get('vote_average', 0)}</rating>
-    <tmdbid>{info.get('tmdb_id') or info.get('id', '')}</tmdbid>'''
+    <title>{title}</title>
+    <originaltitle>{original_title}</originaltitle>
+    <sorttitle></sorttitle>
+    <year>{year}</year>
+    <plot>{overview}</plot>
+    <outline>{overview}</outline>
+    <tagline>{tagline}</tagline>
+    <runtime>{runtime}</runtime>
+    <thumb aspect="poster" preview="">{info.get('poster_path', '')}</thumb>
+    <fanart>
+        <thumb preview="">{info.get('backdrop_path', '')}</thumb>
+    </fanart>
+    <mpaa></mpaa>
+    <certification></certification>
+    <id movie="true">{tmdb_id}</id>
+    <tmdbid>{tmdb_id}</tmdbid>
+    <imdb>{imdb_id}</imdb>
+    <rating>{vote_average}</rating>
+    <votes>{info.get('vote_count', 0)}</votes>
+    <status>{status}</status>
+    <releasedate>{release_date}</releasedate>
+    <originallanguage>{original_language}</originallanguage>
+    <budget>{budget}</budget>
+    <revenue>{revenue}</revenue>'''
         
         if collection_id:
             nfo_content += f'''
+    <set>
+        <name>{escape_xml(collection_name or '')}</name>
+        <overview></overview>
+    </set>
     <TmdbCollectionId>{collection_id}</TmdbCollectionId>'''
         
-        if collection_name:
-            nfo_content += f'''
-    <collection>
-        <name>{collection_name}</name>
-    </collection>'''
-        
         for genre in info.get('genres', []):
+            genre_name = genre.get('name', genre) if isinstance(genre, dict) else genre
             nfo_content += f'''
-    <genre>{genre}</genre>'''
+    <genre>{escape_xml(genre_name)}</genre>'''
+        
+        studios = info.get('production_companies', [])
+        for studio in studios:
+            studio_name = studio.get('name', '') if isinstance(studio, dict) else studio
+            if studio_name:
+                nfo_content += f'''
+    <studio>{escape_xml(studio_name)}</studio>'''
+        
+        countries = info.get('production_countries', [])
+        for country in countries:
+            country_name = country.get('name', '') if isinstance(country, dict) else country
+            if country_name:
+                nfo_content += f'''
+    <country>{escape_xml(country_name)}</country>'''
+        
+        spoken_languages = info.get('spoken_languages', [])
+        for lang in spoken_languages:
+            lang_name = lang.get('name', '') if isinstance(lang, dict) else lang
+            if lang_name:
+                nfo_content += f'''
+    <language>{escape_xml(lang_name)}</language>'''
+        
+        keywords = info.get('keywords', {}).get('keywords', []) if isinstance(info.get('keywords'), dict) else []
+        for keyword in keywords:
+            keyword_name = keyword.get('name', '') if isinstance(keyword, dict) else keyword
+            if keyword_name:
+                nfo_content += f'''
+    <tag>{escape_xml(keyword_name)}</tag>'''
+        
+        credits = info.get('credits', {})
+        
+        directors = credits.get('crew', [])
+        director_names = set()
+        for crew in directors:
+            if crew.get('job') == 'Director':
+                director_names.add(crew.get('name', ''))
+        for director_name in director_names:
+            if director_name:
+                nfo_content += f'''
+    <director>{escape_xml(director_name)}</director>'''
+        
+        writers = credits.get('crew', [])
+        writer_names = set()
+        for crew in writers:
+            if crew.get('department') == 'Writing':
+                writer_names.add(crew.get('name', ''))
+        for writer_name in writer_names:
+            if writer_name:
+                nfo_content += f'''
+    <writer>{escape_xml(writer_name)}</writer>'''
+        
+        cast = credits.get('cast', [])
+        for i, actor in enumerate(cast[:20]):
+            actor_name = actor.get('name', '')
+            character = actor.get('character', '')
+            profile_path = actor.get('profile_path', '')
+            order = actor.get('order', i)
+            if actor_name:
+                nfo_content += f'''
+    <actor>
+        <name>{escape_xml(actor_name)}</name>
+        <role>{escape_xml(character)}</role>
+        <order>{order}</order>
+        <thumb>{profile_path}</thumb>
+    </actor>'''
         
         nfo_content += '''
 </movie>
@@ -983,4 +1165,314 @@ class LocalMovieScanner:
                 movie.collection_name = collection_name
             return nfo_path
         except Exception:
+            return None
+
+    def save_series_nfo(self, series: LocalSeries, info: dict, directory: str = None):
+        """保存电视剧NFO文件为tvshow.nfo格式"""
+        if directory is None:
+            if series.path:
+                directory = series.path
+            else:
+                directory = os.getcwd()
+        
+        nfo_path = os.path.join(directory, 'tvshow.nfo')
+        
+        def escape_xml(text):
+            if not text:
+                return ''
+            text = str(text)
+            text = text.replace('&', '&amp;')
+            text = text.replace('<', '&lt;')
+            text = text.replace('>', '&gt;')
+            text = text.replace('"', '&quot;')
+            text = text.replace("'", '&apos;')
+            return text
+        
+        title = escape_xml(info.get('title', series.title or ''))
+        original_title = escape_xml(info.get('original_title', ''))
+        year = info.get('year', series.year or '')
+        overview = escape_xml(info.get('overview', ''))
+        vote_average = info.get('vote_average', 0)
+        tmdb_id = info.get('tmdb_id', '')
+        imdb_id = info.get('external_ids', {}).get('imdb_id', '') if isinstance(info.get('external_ids'), dict) else ''
+        tvdb_id = info.get('external_ids', {}).get('tvdb_id', '') if isinstance(info.get('external_ids'), dict) else ''
+        status = escape_xml(info.get('status', ''))
+        first_air_date = info.get('first_air_date', '')
+        last_air_date = info.get('last_air_date', '')
+        number_of_seasons = info.get('number_of_seasons', 0)
+        number_of_episodes = info.get('number_of_episodes', 0)
+        episode_run_time = info.get('episode_run_time', [])
+        runtime = episode_run_time[0] if episode_run_time else 0
+        original_language = escape_xml(info.get('original_language', ''))
+        networks = info.get('networks', [])
+        network_name = networks[0].get('name', '') if networks else ''
+        created_by = info.get('created_by', [])
+        
+        nfo_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<tvshow>
+    <title>{title}</title>
+    <originaltitle>{original_title}</originaltitle>
+    <sorttitle></sorttitle>
+    <year>{year}</year>
+    <plot>{overview}</plot>
+    <outline>{overview}</outline>
+    <tagline></tagline>
+    <runtime>{runtime}</runtime>
+    <thumb aspect="poster" preview="">{info.get('poster_path', '')}</thumb>
+    <fanart>
+        <thumb preview="">{info.get('backdrop_path', '')}</thumb>
+    </fanart>
+    <mpaa></mpaa>
+    <certification></certification>
+    <id>{tmdb_id}</id>
+    <tmdbid>{tmdb_id}</tmdbid>
+    <imdb>{imdb_id}</imdb>
+    <tvdbid>{tvdb_id}</tvdbid>
+    <rating>{vote_average}</rating>
+    <votes>{info.get('vote_count', 0)}</votes>
+    <status>{status}</status>
+    <premiered>{first_air_date}</premiered>
+    <aired>{first_air_date}</aired>
+    <lastaired>{last_air_date}</lastaired>
+    <seasons>{number_of_seasons}</seasons>
+    <episodes>{number_of_episodes}</episodes>
+    <originallanguage>{original_language}</originallanguage>
+    <studio>{escape_xml(network_name)}</studio>'''
+        
+        for creator in created_by:
+            creator_name = creator.get('name', '')
+            if creator_name:
+                nfo_content += f'''
+    <creator>{escape_xml(creator_name)}</creator>'''
+        
+        for genre in info.get('genres', []):
+            genre_name = genre.get('name', genre) if isinstance(genre, dict) else genre
+            nfo_content += f'''
+    <genre>{escape_xml(genre_name)}</genre>'''
+        
+        production_companies = info.get('production_companies', [])
+        for company in production_companies:
+            company_name = company.get('name', '') if isinstance(company, dict) else company
+            if company_name:
+                nfo_content += f'''
+    <studio>{escape_xml(company_name)}</studio>'''
+        
+        production_countries = info.get('production_countries', [])
+        for country in production_countries:
+            country_name = country.get('name', '') if isinstance(country, dict) else country
+            if country_name:
+                nfo_content += f'''
+    <country>{escape_xml(country_name)}</country>'''
+        
+        spoken_languages = info.get('spoken_languages', [])
+        for lang in spoken_languages:
+            lang_name = lang.get('name', '') if isinstance(lang, dict) else lang
+            if lang_name:
+                nfo_content += f'''
+    <language>{escape_xml(lang_name)}</language>'''
+        
+        keywords = info.get('keywords', {}).get('results', []) if isinstance(info.get('keywords'), dict) else []
+        for keyword in keywords:
+            keyword_name = keyword.get('name', '') if isinstance(keyword, dict) else keyword
+            if keyword_name:
+                nfo_content += f'''
+    <tag>{escape_xml(keyword_name)}</tag>'''
+        
+        credits = info.get('credits', {})
+        
+        directors = credits.get('crew', [])
+        director_names = set()
+        for crew in directors:
+            if crew.get('job') == 'Director':
+                director_names.add(crew.get('name', ''))
+        for director_name in director_names:
+            if director_name:
+                nfo_content += f'''
+    <director>{escape_xml(director_name)}</director>'''
+        
+        writers = credits.get('crew', [])
+        writer_names = set()
+        for crew in writers:
+            if crew.get('department') == 'Writing':
+                writer_names.add(crew.get('name', ''))
+        for writer_name in writer_names:
+            if writer_name:
+                nfo_content += f'''
+    <writer>{escape_xml(writer_name)}</writer>'''
+        
+        cast = credits.get('cast', [])
+        for i, actor in enumerate(cast[:20]):
+            actor_name = actor.get('name', '')
+            character = actor.get('character', '')
+            profile_path = actor.get('profile_path', '')
+            order = actor.get('order', i)
+            if actor_name:
+                nfo_content += f'''
+    <actor>
+        <name>{escape_xml(actor_name)}</name>
+        <role>{escape_xml(character)}</role>
+        <order>{order}</order>
+        <thumb>{profile_path}</thumb>
+    </actor>'''
+        
+        nfo_content += '''
+</tvshow>
+'''
+        
+        try:
+            with open(nfo_path, 'w', encoding='utf-8') as f:
+                f.write(nfo_content)
+            
+            series.nfo_path = nfo_path
+            series.matched = True
+            return nfo_path
+        except Exception as e:
+            print(f"保存电视剧NFO失败: {e}")
+            return None
+
+    def save_episode_nfo(self, series: LocalSeries, season_num: int, episode_num: int, episode_info: dict, directory: str = None):
+        """保存集NFO文件"""
+        if directory is None:
+            directory = series.path
+        
+        nfo_filename = f"S{season_num:02d}E{episode_num:02d}.nfo"
+        nfo_path = os.path.join(directory, nfo_filename)
+        
+        def escape_xml(text):
+            if not text:
+                return ''
+            text = str(text)
+            text = text.replace('&', '&amp;')
+            text = text.replace('<', '&lt;')
+            text = text.replace('>', '&gt;')
+            text = text.replace('"', '&quot;')
+            text = text.replace("'", '&apos;')
+            return text
+        
+        title = escape_xml(episode_info.get('title', ''))
+        overview = escape_xml(episode_info.get('overview', ''))
+        vote_average = episode_info.get('vote_average', 0)
+        vote_count = episode_info.get('vote_count', 0)
+        air_date = episode_info.get('air_date', '')
+        still_path = episode_info.get('still_path', '')
+        runtime = episode_info.get('runtime', 0)
+        episode_number = episode_info.get('episode_number', episode_num)
+        season_number = episode_info.get('season_number', season_num)
+        tmdb_id = episode_info.get('id', '')
+        
+        nfo_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<episodedetails>
+    <title>{title}</title>
+    <showtitle>{escape_xml(series.title or '')}</showtitle>
+    <season>{season_number}</season>
+    <episode>{episode_number}</episode>
+    <plot>{overview}</plot>
+    <outline>{overview}</outline>
+    <rating>{vote_average}</rating>
+    <votes>{vote_count}</votes>
+    <aired>{air_date}</aired>
+    <runtime>{runtime}</runtime>
+    <thumb aspect="thumb" preview="">{still_path}</thumb>
+    <id>{tmdb_id}</id>
+    <tmdbid>{tmdb_id}</tmdbid>'''
+        
+        credits = episode_info.get('credits', {})
+        if credits:
+            guest_stars = credits.get('guest_stars', [])
+            for actor in guest_stars[:10]:
+                actor_name = actor.get('name', '')
+                character = actor.get('character', '')
+                profile_path = actor.get('profile_path', '')
+                if actor_name:
+                    nfo_content += f'''
+    <actor>
+        <name>{escape_xml(actor_name)}</name>
+        <role>{escape_xml(character)}</role>
+        <thumb>{profile_path}</thumb>
+    </actor>'''
+            
+            crew = credits.get('crew', [])
+            director_names = set()
+            writer_names = set()
+            for crew_member in crew:
+                if crew_member.get('job') == 'Director':
+                    director_names.add(crew_member.get('name', ''))
+                if crew_member.get('department') == 'Writing':
+                    writer_names.add(crew_member.get('name', ''))
+            
+            for director_name in director_names:
+                if director_name:
+                    nfo_content += f'''
+    <director>{escape_xml(director_name)}</director>'''
+            
+            for writer_name in writer_names:
+                if writer_name:
+                    nfo_content += f'''
+    <writer>{escape_xml(writer_name)}</writer>'''
+        
+        nfo_content += '''
+</episodedetails>
+'''
+        
+        try:
+            with open(nfo_path, 'w', encoding='utf-8') as f:
+                f.write(nfo_content)
+            return nfo_path
+        except Exception as e:
+            print(f"保存集NFO失败: {e}")
+            return None
+
+    def save_season_nfo(self, series: LocalSeries, season_num: int, season_info: dict, directory: str = None):
+        """保存季NFO文件"""
+        if directory is None:
+            directory = series.path
+        
+        season_dir = os.path.join(directory, f"Season {season_num}")
+        if not os.path.exists(season_dir):
+            os.makedirs(season_dir)
+        
+        nfo_path = os.path.join(season_dir, 'season.nfo')
+        
+        def escape_xml(text):
+            if not text:
+                return ''
+            text = str(text)
+            text = text.replace('&', '&amp;')
+            text = text.replace('<', '&lt;')
+            text = text.replace('>', '&gt;')
+            text = text.replace('"', '&quot;')
+            text = text.replace("'", '&apos;')
+            return text
+        
+        title = escape_xml(season_info.get('name', f'Season {season_num}'))
+        overview = escape_xml(season_info.get('overview', ''))
+        vote_average = season_info.get('vote_average', 0)
+        air_date = season_info.get('air_date', '')
+        season_number = season_info.get('season_number', season_num)
+        episode_count = season_info.get('episode_count', 0)
+        tmdb_id = season_info.get('id', '')
+        poster_path = season_info.get('poster_path', '')
+        
+        nfo_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<season>
+    <title>{title}</title>
+    <showtitle>{escape_xml(series.title or '')}</showtitle>
+    <season>{season_number}</season>
+    <plot>{overview}</plot>
+    <outline>{overview}</outline>
+    <rating>{vote_average}</rating>
+    <aired>{air_date}</aired>
+    <episode>{episode_count}</episode>
+    <thumb aspect="poster" preview="">{poster_path}</thumb>
+    <id>{tmdb_id}</id>
+    <tmdbid>{tmdb_id}</tmdbid>
+</season>
+'''
+        
+        try:
+            with open(nfo_path, 'w', encoding='utf-8') as f:
+                f.write(nfo_content)
+            return nfo_path
+        except Exception as e:
+            print(f"保存季NFO失败: {e}")
             return None

@@ -237,16 +237,25 @@ class TMDBAPI:
     
     def get_movie_details(self, movie_id: int) -> Optional[dict]:
         logging.info(f"获取电影详情: {movie_id}")
-        return self._make_request(f'movie/{movie_id}')
+        params = {
+            'append_to_response': 'credits,release_dates,videos,external_ids,alternative_titles,translations'
+        }
+        return self._make_request(f'movie/{movie_id}', params)
     
     def get_tv_details(self, tv_id: int) -> Optional[dict]:
         logging.info(f"获取TV详情: {tv_id}")
-        return self._make_request(f'tv/{tv_id}')
+        params = {
+            'append_to_response': 'credits,external_ids,alternative_titles,translations,content_ratings'
+        }
+        return self._make_request(f'tv/{tv_id}', params)
     
     def get_episode_details(self, tv_id: int, season_number: int, episode_number: int) -> Optional[dict]:
         """获取集详细信息"""
         logging.info(f"获取集详情: TV ID={tv_id}, S{season_number:02d}E{episode_number:02d}")
-        return self._make_request(f'tv/{tv_id}/season/{season_number}/episode/{episode_number}')
+        params = {
+            'append_to_response': 'credits,external_ids,images'
+        }
+        return self._make_request(f'tv/{tv_id}/season/{season_number}/episode/{episode_number}', params)
     
     def get_still_url(self, still_path: str, size: str = 'w500') -> str:
         """获取集剧照URL"""

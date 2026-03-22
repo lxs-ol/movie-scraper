@@ -12,9 +12,53 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 
 
-CURRENT_VERSION = "1.1.0"
+CURRENT_VERSION = "1.1.6"
 GITHUB_REPO = "lxs-ol/movie-scraper"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+
+def load_proxy_config():
+    """从配置文件加载代理配置"""
+    config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                return config.get('proxy', {})
+        except Exception as e:
+            print(f"加载代理配置失败: {e}")
+    return {}
+
+
+def build_proxies(proxy_config: dict):
+    """构建代理配置字典"""
+    if not proxy_config or not proxy_config.get('type'):
+        return None
+    
+    proxy_type = proxy_config['type']
+    host = proxy_config.get('host', '')
+    port = proxy_config.get('port', '')
+    
+    if not host or not port:
+        return None
+    
+    proxy_url = f"{host}:{port}"
+    
+    if proxy_type == 'socks5':
+        try:
+            import socks
+            return {
+                'http': f'socks5://{proxy_url}',
+                'https': f'socks5://{proxy_url}'
+            }
+        except ImportError:
+            print("使用SOCKS5代理需要安装PySocks库")
+            return None
+    else:
+        return {
+            'http': f'http://{proxy_url}',
+            'https': f'http://{proxy_url}'
+        }
 
 
 class CheckUpdateThread(QThread):
@@ -22,7 +66,11 @@ class CheckUpdateThread(QThread):
     
     def run(self):
         try:
-            response = requests.get(GITHUB_API_URL, timeout=10)
+            # 加载代理配置
+            proxy_config = load_proxy_config()
+            proxies = build_proxies(proxy_config)
+            
+            response = requests.get(GITHUB_API_URL, timeout=10, proxies=proxies)
             
             if response.status_code == 200:
                 data = response.json()
@@ -70,11 +118,15 @@ class DownloadUpdateThread(QThread):
     
     def run(self):
         try:
+            # 加载代理配置
+            proxy_config = load_proxy_config()
+            proxies = build_proxies(proxy_config)
+            
             temp_dir = tempfile.gettempdir()
             filename = os.path.basename(self.download_url)
             save_path = os.path.join(temp_dir, filename)
             
-            response = requests.get(self.download_url, stream=True, timeout=30)
+            response = requests.get(self.download_url, stream=True, timeout=30, proxies=proxies)
             total_size = int(response.headers.get('content-length', 0))
             
             downloaded = 0

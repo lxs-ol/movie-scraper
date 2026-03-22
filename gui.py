@@ -3,6 +3,7 @@ import sys
 import json
 import shutil
 import time
+import re
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QListWidget, QListWidgetItem, QTabWidget,
@@ -13,10 +14,11 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QTreeWidget, QTreeWidgetItem, QMenu
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer
-from PyQt5.QtGui import QPixmap, QIcon, QFont, QImage
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QImage, QColor
 from typing import List, Optional, Dict
 from api import TMDBAPI, MovieInfo
 from scanner import LocalMovieScanner, LocalMovie, LocalSeries
+from ai_helper import AIHelper
 from updater import AutoUpdater
 
 class TVSeriesScrapeThread(QThread):
@@ -306,16 +308,20 @@ class ImageDownloadThread(QThread):
     progress_update = pyqtSignal(int, str)
     download_complete = pyqtSignal(bool, str)
     
-    def __init__(self, api: TMDBAPI, media_item, directory: str):
+    def __init__(self, api: TMDBAPI, media_item, directory: str, scanner=None):
         super().__init__()
         self.api = api
         self.media_item = media_item
         self.directory = directory
+        self.scanner = scanner
     
     def run(self):
         try:
+            # 判断是电影还是电视剧
+            is_series = hasattr(self.media_item, 'seasons') and self.media_item.seasons
+            
             # 下载海报
-            self.progress_update.emit(25, '正在下载海报...')
+            self.progress_update.emit(10, '正在下载海报...')
             poster_path = self.media_item.info.get('poster_path')
             if poster_path:
                 poster_url = self.api.get_poster_url(poster_path, 'w500')
@@ -324,26 +330,32 @@ class ImageDownloadThread(QThread):
                     if self.api.download_image(poster_url, poster_save_path):
                         self.media_item.poster_path = poster_save_path
             
-            # 下载背景图
-            self.progress_update.emit(50, '正在下载背景图...')
+            # 下载背景图/粉丝艺术图
+            self.progress_update.emit(30, '正在下载背景图...')
             backdrop_path = self.media_item.info.get('backdrop_path')
             if backdrop_path:
                 backdrop_url = self.api.get_backdrop_url(backdrop_path, 'w1280')
                 if backdrop_url:
-                    backdrop_save_path = os.path.join(self.directory, 'background.jpg')
+                    # 保存为 fanart.jpg 和 backdrop.jpg
+                    fanart_save_path = os.path.join(self.directory, 'fanart.jpg')
+                    self.api.download_image(backdrop_url, fanart_save_path)
+                    backdrop_save_path = os.path.join(self.directory, 'backdrop.jpg')
                     self.api.download_image(backdrop_url, backdrop_save_path)
             
             # 下载logo
-            self.progress_update.emit(75, '正在下载Logo...')
+            self.progress_update.emit(50, '正在下载Logo...')
             logo_path = self.media_item.info.get('logo_path')
             if logo_path:
                 logo_url = self.api.get_logo_url(logo_path, 'w500')
                 if logo_url:
+                    # 保存为 logo.png 和 clearlogo.png
                     logo_save_path = os.path.join(self.directory, 'logo.png')
                     self.api.download_image(logo_url, logo_save_path)
+                    clearlogo_save_path = os.path.join(self.directory, 'clearlogo.png')
+                    self.api.download_image(logo_url, clearlogo_save_path)
             
             # 下载banner
-            self.progress_update.emit(100, '正在下载Banner...')
+            self.progress_update.emit(70, '正在下载Banner...')
             banner_path = self.media_item.info.get('banner_path')
             if banner_path:
                 banner_url = self.api.get_banner_url(banner_path, 'w1280')
@@ -351,17 +363,78 @@ class ImageDownloadThread(QThread):
                     banner_save_path = os.path.join(self.directory, 'banner.jpg')
                     self.api.download_image(banner_url, banner_save_path)
             
+            # 如果是电视剧，下载季海报
+            if is_series:
+                self.progress_update.emit(85, '正在下载季海报...')
+                self._download_season_posters()
+            
+            self.progress_update.emit(100, '图片下载完成')
             self.download_complete.emit(True, '图片下载完成')
         except Exception as e:
             print(f"下载图片错误: {e}")
+            import traceback
+            traceback.print_exc()
             self.download_complete.emit(False, str(e))
     
-    def _count_files(self, directory: str) -> int:
-        """计算目录中的文件数量"""
-        count = 0
-        for root, dirs, files in os.walk(directory):
-            count += len(files)
-        return count
+    def _download_season_posters(self):
+        """下载电视剧的季海报并保存season.nfo"""
+        try:
+            seasons = getattr(self.media_item, 'seasons', [])
+            tmdb_id = getattr(self.media_item, 'tmdb_id', None)
+            
+            if not tmdb_id:
+                return
+            
+            for season in seasons:
+                if not isinstance(season, dict):
+                    continue
+                
+                season_num = season.get('season', 0)
+                
+                # 从 TMDB 获取季信息
+                season_details = self.api.get_season_details(tmdb_id, season_num)
+                if season_details:
+                    # 下载季海报
+                    if season_details.get('poster_path'):
+                        poster_url = self.api.get_poster_url(season_details['poster_path'], 'w500')
+                        if poster_url:
+                            # 保存为 season01-poster.jpg, season02-poster.jpg 等
+                            season_poster_path = os.path.join(self.directory, f'season{season_num:02d}-poster.jpg')
+                            self.api.download_image(poster_url, season_poster_path)
+                            print(f"下载季海报: {season_poster_path}")
+                    
+                    # 创建season文件夹并保存season.nfo
+                    season_dir_name = f"Season {season_num}"
+                    season_dir = os.path.join(self.directory, season_dir_name)
+                    if not os.path.exists(season_dir):
+                        os.makedirs(season_dir)
+                        print(f"创建季目录: {season_dir}")
+                    
+                    # 保存season.nfo
+                    season_nfo_path = os.path.join(season_dir, 'season.nfo')
+                    season_info = {
+                        'name': season_details.get('name', f'Season {season_num}'),
+                        'overview': season_details.get('overview', '')
+                    }
+                    self._save_season_nfo(season_nfo_path, season_num, season_info)
+                    print(f"保存季NFO: {season_nfo_path}")
+        except Exception as e:
+            print(f"下载季海报错误: {e}")
+    
+    def _save_season_nfo(self, nfo_path: str, season_num: int, season_info: dict):
+        """保存季NFO文件"""
+        try:
+            nfo_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<season>
+    <title>{season_info.get('name', f'Season {season_num}')}</title>
+    <season>{season_num}</season>
+    <plot>{season_info.get('overview', '')}</plot>
+</season>
+'''
+            with open(nfo_path, 'w', encoding='utf-8') as f:
+                f.write(nfo_content)
+        except Exception as e:
+            print(f"保存季NFO失败: {e}")
 
 class EpisodeStillDownloadThread(QThread):
     """下载集剧照的线程"""
@@ -454,9 +527,8 @@ class EpisodeStillDownloadThread(QThread):
                                 still_url = self.api.get_still_url(still_path, 'w500')
                                 
                                 if still_url:
-                                    # 保存为集缩略图 - 使用集文件名作为基础
-                                    # 例如：幽遊白書_S01E01_第 1 集.STRM -> 幽遊白書_S01E01_第 1 集-thumb.jpg
-                                    thumb_save_path = os.path.join(episode_dir, f"{episode_base}-thumb.jpg")
+                                    # 保存为集缩略图 - 使用标准格式 S01E01-thumb.jpg
+                                    thumb_save_path = os.path.join(episode_dir, f"S{season_num:02d}E{episode_num:02d}-thumb.jpg")
                                     
                                     print(f"    下载到: {thumb_save_path}")
                                     
@@ -719,6 +791,7 @@ class MovieScraperGUI(QMainWindow):
         
         self.api = TMDBAPI()
         self.scanner = LocalMovieScanner()
+        self.ai_helper = AIHelper()
         self.local_movies: List[LocalMovie] = []
         self.local_series: List[LocalSeries] = []
         self.filtered_movies: List[LocalMovie] = []
@@ -732,6 +805,9 @@ class MovieScraperGUI(QMainWindow):
         self.progress_bar: Optional[QProgressBar] = None
         self.progress_label: Optional[QLabel] = None
         
+        # 日志列表
+        self.log_messages: List[str] = []
+        
         self.config_file = self.get_config_path()
         self.load_config()
         
@@ -739,6 +815,9 @@ class MovieScraperGUI(QMainWindow):
         
         self.auto_updater = AutoUpdater(self)
         QTimer.singleShot(2000, lambda: self.auto_updater.check_for_updates(silent=True))
+        
+        # 程序启动日志
+        self.log('程序启动 - 李先生ol-电影刮削器 v1.1.5')
     
     def _init_dpi_scaling(self):
         screen = QApplication.primaryScreen()
@@ -879,6 +958,13 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         
         layout.addStretch()
         
+        log_btn = QPushButton('📋 日志')
+        log_btn.clicked.connect(self.show_log)
+        log_btn.setMaximumHeight(int(28 * self.scale_factor))
+        log_btn.setMinimumHeight(int(28 * self.scale_factor))
+        log_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        layout.addWidget(log_btn)
+        
         check_update_btn = QPushButton('🔄 检查更新')
         check_update_btn.clicked.connect(self.check_for_updates)
         check_update_btn.setMaximumHeight(int(28 * self.scale_factor))
@@ -966,7 +1052,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(int(4 * self.scale_factor))
-        auto_match_btn = QPushButton('自动匹配')
+        auto_match_btn = QPushButton('自动刮削')
         auto_match_btn.clicked.connect(self.auto_match_all)
         auto_match_btn.setMaximumHeight(int(26 * self.scale_factor))
         btn_layout.addWidget(auto_match_btn)
@@ -1396,6 +1482,15 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                 
                 if 'proxy' in config:
                     self.api.set_proxy(config['proxy'])
+                
+                if 'ai_api_key' in config and self.ai_helper:
+                    self.ai_helper.set_api_key(config['ai_api_key'])
+                
+                if 'ai_base_url' in config and self.ai_helper:
+                    self.ai_helper.set_base_url(config['ai_base_url'])
+                
+                if 'ai_model' in config and self.ai_helper:
+                    self.ai_helper.set_model(config['ai_model'])
             except Exception as e:
                 print(f"加载配置失败: {e}")
     
@@ -1410,6 +1505,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         directory = QFileDialog.getExistingDirectory(self, '选择目录')
         if not directory:
             return
+        
+        self.log(f'开始扫描目录: {directory} (类型: {scan_type})')
         
         # 设置当前目录和扫描类型
         self.current_directory = directory
@@ -1483,6 +1580,57 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         item.setText(0, display_name)
         # 使用字典格式存储数据，与 on_media_tree_clicked 方法兼容
         item.setData(0, Qt.UserRole, {'type': 'movie', 'data': movie})
+        
+        # 检查封面是否完整，不完整则标红
+        has_poster = False
+        has_backdrop = False
+        
+        # 检查本地海报
+        if movie.poster_path and os.path.exists(movie.poster_path):
+            has_poster = True
+        # 检查 info 中的海报
+        elif movie.info.get('poster_path'):
+            has_poster = True
+        # 检查常见海报文件名
+        else:
+            movie_dir = os.path.dirname(movie.path) if movie.path else ''
+            if movie_dir:
+                poster_names = ['poster.jpg', 'Poster.jpg', 'poster.png', 'Poster.png', 
+                               'thumb.jpg', 'Thumb.jpg', 'thumb.png', 'Thumb.png',
+                               f'{title}.jpg', f'{title}.png']
+                for pn in poster_names:
+                    if os.path.exists(os.path.join(movie_dir, pn)):
+                        has_poster = True
+                        break
+        
+        # 检查本地背景图
+        if movie.backdrop_path and os.path.exists(movie.backdrop_path):
+            has_backdrop = True
+        # 检查 info 中的背景图
+        elif movie.info.get('backdrop_path'):
+            has_backdrop = True
+        # 检查常见背景图文件名
+        else:
+            movie_dir = os.path.dirname(movie.path) if movie.path else ''
+            if movie_dir:
+                backdrop_names = ['backdrop.jpg', 'Backdrop.jpg', 'backdrop.png', 'Backdrop.png',
+                                 'fanart.jpg', 'Fanart.jpg', 'fanart.png', 'Fanart.png',
+                                 'background.jpg', 'Background.jpg']
+                for bn in backdrop_names:
+                    if os.path.exists(os.path.join(movie_dir, bn)):
+                        has_backdrop = True
+                        break
+        
+        # 如果缺少海报或背景图，标红显示
+        if not has_poster or not has_backdrop:
+            item.setForeground(0, QColor('#e74c3c'))  # 红色
+            # 添加提示信息
+            missing = []
+            if not has_poster:
+                missing.append('海报')
+            if not has_backdrop:
+                missing.append('背景图')
+            item.setToolTip(0, f'缺少: {", ".join(missing)}')
     
     def _add_series_to_tree(self, series):
         """添加电视剧到树形列表"""
@@ -1536,12 +1684,14 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             self.local_movies = items
             self.filtered_movies = self.local_movies
             self.selection_label.setText(f'共 {len(self.local_movies)} 个电影')
+            self.log(f'扫描完成: 找到 {len(self.local_movies)} 个电影')
             QMessageBox.information(self, '扫描完成', f'找到 {len(self.local_movies)} 个视频文件')
         else:
             # 电视剧扫描
             self.local_series = items
             self.filtered_series = self.local_series
             self.selection_label.setText(f'共 {len(self.local_series)} 个电视剧')
+            self.log(f'扫描完成: 找到 {len(self.local_series)} 个电视剧')
             QMessageBox.information(self, '扫描完成', f'找到 {len(self.local_series)} 个电视剧')
     
     def add_movie_to_list(self, movie: LocalMovie):
@@ -2891,6 +3041,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                 QMessageBox.warning(self, '警告', '请输入搜索关键词')
                 return
             
+            self.log(f'搜索: {query}')
+            
             if not hasattr(self, 'search_type_combo'):
                 print("错误: search_type_combo 不存在")
                 return
@@ -3000,40 +3152,26 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                 QApplication.processEvents()
                 self.update_series_detail_view(self.current_series)
                 
-                info = {
+                # 使用完整的info数据
+                info = self.current_series.info.copy()
+                info.update({
                     'title': self.current_series.title,
-                    'original_title': self.current_series.info.get('original_title', ''),
                     'year': self.current_series.year,
                     'overview': self.current_series.overview,
                     'vote_average': self.current_series.vote_average,
                     'tmdb_id': self.current_series.tmdb_id,
                     'media_type': self.current_series.media_type,
                     'genres': self.current_series.genres,
-                    'poster_path': self.current_series.info.get('poster_path', ''),
-                    'backdrop_path': self.current_series.info.get('backdrop_path', ''),
-                }
-                
-                self.progress_label.setText('正在创建同名目录...')
-                QApplication.processEvents()
-                
-                # 获取电影/电视剧文件所在目录
-                base_directory = os.path.dirname(self.current_series.path) if self.current_series.path else os.getcwd()
-                
-                # 创建同名目录（电影名（年份））
-                title = self.current_series.title or 'Unknown'
-                year = f" ({self.current_series.year})" if self.current_series.year else ""
-                folder_name = f"{title}{year}"
-                image_directory = os.path.join(base_directory, folder_name)
-                
-                # 如果同名目录不存在，则创建
-                if not os.path.exists(image_directory):
-                    os.makedirs(image_directory)
+                })
                 
                 self.progress_label.setText('正在保存NFO文件...')
                 QApplication.processEvents()
                 
-                # 保存NFO文件到同名目录
-                nfo_path = self.scanner.save_nfo(self.current_series, info, image_directory)
+                # 电视剧：图片保存在电视剧根目录
+                image_directory = self.current_series.path if self.current_series.path else os.getcwd()
+                
+                # 保存NFO文件（tvshow.nfo）到电视剧根目录
+                nfo_path = self.scanner.save_series_nfo(self.current_series, info, image_directory)
                 if nfo_path:
                     
                     self.progress_label.setText('正在下载图片...')
@@ -3083,26 +3221,13 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                     'backdrop_path': self.current_movie.info.get('backdrop_path', ''),
                 }
                 
-                self.progress_label.setText('正在创建同名目录...')
-                QApplication.processEvents()
-                
-                # 获取电影/电视剧文件所在目录
-                base_directory = os.path.dirname(self.current_movie.path) if self.current_movie.path else os.getcwd()
-                
-                # 创建同名目录（电影名（年份））
-                title = self.current_movie.title or 'Unknown'
-                year = f" ({self.current_movie.year})" if self.current_movie.year else ""
-                folder_name = f"{title}{year}"
-                image_directory = os.path.join(base_directory, folder_name)
-                
-                # 如果同名目录不存在，则创建
-                if not os.path.exists(image_directory):
-                    os.makedirs(image_directory)
-                
                 self.progress_label.setText('正在保存NFO文件...')
                 QApplication.processEvents()
                 
-                # 保存NFO文件到同名目录
+                # 电影：图片直接保存在电影文件所在目录
+                image_directory = os.path.dirname(self.current_movie.path) if self.current_movie.path else os.getcwd()
+                
+                # 保存NFO文件到电影文件所在目录
                 nfo_path = self.scanner.save_nfo(self.current_movie, info, image_directory)
                 if nfo_path:
                     
@@ -3171,8 +3296,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                             self.progress_label.setText('正在下载集剧照...')
                             QApplication.processEvents()
                             
-                            # 获取电视剧文件所在目录
-                            base_directory = os.path.dirname(self.current_series.path) if self.current_series.path else os.getcwd()
+                            # 获取电视剧根目录
+                            base_directory = self.current_series.path if self.current_series.path else os.getcwd()
                             
                             # 启动集剧照下载线程
                             print("启动集剧照下载线程")
@@ -3293,8 +3418,8 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
                         print("用户选择了快捷刮削")
                         self.current_movie = data.get('data')
                         print(f"设置current_movie: {self.current_movie}")
-                        print("准备调用search_current_movie")
-                        self.search_current_movie()
+                        print("准备调用quick_scrape_movie")
+                        self.quick_scrape_movie()
                     elif action == rename_save_action:
                         print("用户选择了改名保存")
                         self.current_movie = data.get('data')
@@ -3602,6 +3727,54 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         for series in self.local_series:
             self._add_series_to_tree(series)
     
+    def _clean_search_title(self, title: str) -> str:
+        """清理电影/电视剧名字，去掉年份、分辨率、编码等干扰信息"""
+        if not title:
+            return title
+        
+        original_title = title
+        
+        # 去掉年份及周围的括号、方括号等
+        title = re.sub(r'[\(\[{\s]+(\d{4})[\)\]}\s]*', '', title)
+        title = re.sub(r'[\s\-_\.]+(\d{4})(?:[\s\-_\.]|$)', ' ', title)
+        
+        # 去掉分辨率信息
+        title = re.sub(r'\b(1080p|720p|480p|360p|2160p|4K|8K)\b', '', title, flags=re.IGNORECASE)
+        
+        # 去掉编码信息
+        title = re.sub(r'\b(x264|x265|H\.264|H\.265|HEVC|AVC|XviD|DivX)\b', '', title, flags=re.IGNORECASE)
+        
+        # 去掉来源信息
+        title = re.sub(r'\b(BluRay|BDRip|WEBRip|WEB-DL|HDTV|DVDRip|DVDScr|CAM|TS|R5|R6|HDRip|BRRip)\b', '', title, flags=re.IGNORECASE)
+        
+        # 去掉音频信息
+        title = re.sub(r'\b(DTS|AC3|AAC|DD5\.1|DD7\.1|Atmos|TrueHD|FLAC)\b', '', title, flags=re.IGNORECASE)
+        
+        # 去掉其他常见标签
+        title = re.sub(r'\b(REMUX|PROPER|REPACK|UNRATED|EXTENDED|DIRECTOR.?S?.?CUT|THEATRICAL|FINAL|COMPLETE)\b', '', title, flags=re.IGNORECASE)
+        title = re.sub(r'\b(3D|SBS|HSBS|OU|FramePacking)\b', '', title, flags=re.IGNORECASE)
+        title = re.sub(r'\b(DUAL|DUBBED|SUBBED|MULTI|RETAIL|LIMITED|INTERNAL)\b', '', title, flags=re.IGNORECASE)
+        
+        # 去掉方括号及其内容（通常是标签）
+        title = re.sub(r'\[[^\]]*\]', '', title)
+        
+        # 去掉圆括号及其内容（通常是标签）
+        title = re.sub(r'\([^)]*\)', '', title)
+        
+        # 去掉花括号及其内容
+        title = re.sub(r'\{[^}]*\}', '', title)
+        
+        # 替换常见分隔符为空格
+        title = re.sub(r'[\.]+', ' ', title)
+        title = re.sub(r'[\-_]+', ' ', title)
+        
+        # 去掉多余空格
+        title = re.sub(r'\s+', ' ', title)
+        title = title.strip()
+        
+        print(f"清理标题: '{original_title}' -> '{title}'")
+        return title
+    
     def search_current_movie(self):
         try:
             print("=== search_current_movie 被调用 ===")
@@ -3612,11 +3785,15 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             if hasattr(self, 'current_series') and self.current_series:
                 # 处理电视剧
                 title = getattr(self.current_series, 'title', None) or getattr(self.current_series, 'name', '')
-                print(f"电视剧标题: {title}")
+                print(f"电视剧原始标题: {title}")
+                
+                # 清理标题用于搜索
+                clean_title = self._clean_search_title(title)
+                print(f"电视剧清理后标题: {clean_title}")
                 
                 if hasattr(self, 'search_input') and self.search_input:
-                    self.search_input.setText(title)
-                    print(f"已设置搜索框文本: {title}")
+                    self.search_input.setText(clean_title)
+                    print(f"已设置搜索框文本: {clean_title}")
                 else:
                     print("警告: search_input 不存在")
                 
@@ -3629,11 +3806,15 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             elif hasattr(self, 'current_movie') and self.current_movie:
                 # 处理电影
                 title = getattr(self.current_movie, 'title', None) or getattr(self.current_movie, 'name', '')
-                print(f"电影标题: {title}")
+                print(f"电影原始标题: {title}")
+                
+                # 清理标题用于搜索
+                clean_title = self._clean_search_title(title)
+                print(f"电影清理后标题: {clean_title}")
                 
                 if hasattr(self, 'search_input') and self.search_input:
-                    self.search_input.setText(title)
-                    print(f"已设置搜索框文本: {title}")
+                    self.search_input.setText(clean_title)
+                    print(f"已设置搜索框文本: {clean_title}")
                 else:
                     print("警告: search_input 不存在")
                 
@@ -3678,19 +3859,9 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             if nfo_path:
                 print(f"NFO文件保存成功: {nfo_path}")
                 
-                # 获取电影文件所在目录
-                base_directory = os.path.dirname(self.current_movie.path) if self.current_movie.path else os.getcwd()
-                
-                # 创建同名目录（电影名（年份））
-                title = self.current_movie.title or 'Unknown'
-                year = f" ({self.current_movie.year})" if self.current_movie.year else ""
-                folder_name = f"{title}{year}"
-                image_directory = os.path.join(base_directory, folder_name)
-                
-                # 如果同名目录不存在，则创建
-                if not os.path.exists(image_directory):
-                    os.makedirs(image_directory)
-                    print(f"创建同名目录: {image_directory}")
+                # 电影：图片直接保存在电影文件所在目录（不创建子目录）
+                image_directory = os.path.dirname(self.current_movie.path) if self.current_movie.path else os.getcwd()
+                print(f"图片保存目录: {image_directory}")
                 
                 # 显示进度对话框
                 self.show_progress_dialog('正在下载图片...', 100)
@@ -3789,29 +3960,1266 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         if self.current_movie:
             self.update_detail_view(self.current_movie)
     
+    def _extract_year_from_title(self, title: str) -> tuple:
+        """从标题中提取年份和清理后的标题"""
+        if not title:
+            return None, title
+        
+        year = None
+        clean_title = title
+        
+        # 匹配括号中的年份 (2023) [2023] {2023}
+        match = re.search(r'[\(\[{\s]+(\d{4})[\)\]}\s]*', title)
+        if match:
+            year = match.group(1)
+            clean_title = title[:match.start()] + title[match.end():]
+        else:
+            # 匹配空格分隔的年份
+            match = re.search(r'[\s\-_\.]+(\d{4})(?:[\s\-_\.]|$)', title)
+            if match:
+                year = match.group(1)
+                clean_title = title[:match.start()] + title[match.end():]
+        
+        # 清理标题
+        clean_title = self._clean_search_title(clean_title)
+        
+        return year, clean_title
+    
+    def _find_best_match(self, results: list, target_year: str = None) -> tuple:
+        """根据年份找到最佳匹配，返回 (最佳匹配, 是否需要用户选择, 候选列表)"""
+        if not results:
+            return None, False, []
+        
+        # 过滤只保留电影类型
+        movie_results = [r for r in results if getattr(r, 'media_type', 'movie') == 'movie']
+        
+        if not movie_results:
+            movie_results = results
+        
+        if target_year:
+            # 尝试找到年份匹配的电影
+            year_matches = [r for r in movie_results if str(getattr(r, 'year', '')) == str(target_year)]
+            
+            if len(year_matches) == 1:
+                return year_matches[0], False, []
+            elif len(year_matches) > 1:
+                # 多个年份匹配，需要用户选择
+                return None, True, year_matches
+        
+        # 没有年份或没有年份匹配
+        if len(movie_results) == 1:
+            return movie_results[0], False, []
+        
+        # 多个结果，需要用户选择前5个
+        return None, True, movie_results[:5]
+    
+    def _parse_filename_parts(self, filename: str) -> list:
+        """解析文件名，拆分成多个部分"""
+        import re
+        
+        # 移除扩展名
+        name = os.path.splitext(filename)[0]
+        
+        # 常见的质量标识符和关键词
+        quality_keywords = [
+            '1080p', '720p', '480p', '360p', '2160p', '4K', '4k',
+            'BluRay', 'BDRip', 'BRRip', 'WEB-DL', 'WEBDL', 'WEBRip', 'HDTV',
+            'DVDRip', 'DVD', 'HDRip', 'CAM', 'TS', 'HDTS', 'HDTC',
+            'REMUX', 'Remux', 'x264', 'x265', 'H264', 'H265', 'HEVC', 'AVC',
+            'AAC', 'AC3', 'DTS', 'DTS-HD', 'TrueHD', 'Atmos', 'FLAC', 'PCM',
+            'DD5.1', 'DD5', 'DD2.0', 'DD7.1', '5.1', '7.1', '2.0',
+            '10bit', '8bit', 'HDR', 'SDR', 'DoVi', 'DV',
+            'Netflix', 'Amazon', 'Disney', 'HBO', 'AppleTV', 'Hulu',
+            'REPACK', 'PROPER', 'EXTENDED', 'UNRATED', 'THEATRICAL',
+            'Dual', 'DualAudio', 'Multi', 'MultiAudio',
+            'GB', 'CHT', 'CHS', 'ENG', 'JAP', 'KOR', 'CN', 'EN', 'JA',
+            'x264-iFT', 'x264-YIFY', 'x264-SPARKS', 'x264-AMIABLE',
+        ]
+        
+        # 按分隔符拆分
+        parts = re.split(r'[._\-\s\[\]（）【】]+', name)
+        
+        # 过滤空字符串
+        parts = [p.strip() for p in parts if p.strip()]
+        
+        # 标记每个部分的类型
+        parsed_parts = []
+        for part in parts:
+            part_type = 'name'
+            part_lower = part.lower()
+            
+            # 检查是否是年份
+            if re.match(r'^(19|20)\d{2}$', part):
+                part_type = 'year'
+            # 检查是否是质量标识符
+            elif any(q.lower() == part_lower for q in quality_keywords):
+                part_type = 'quality'
+            # 检查是否是季集信息
+            elif re.match(r'^S\d{1,2}E\d{1,2}$', part, re.IGNORECASE):
+                part_type = 'episode'
+            elif re.match(r'^S\d{1,2}$', part, re.IGNORECASE):
+                part_type = 'season'
+            elif re.match(r'^E\d{1,2}$', part, re.IGNORECASE):
+                part_type = 'episode'
+            # 检查是否是纯数字（可能是集数）
+            elif part.isdigit() and len(part) <= 3:
+                part_type = 'number'
+            
+            parsed_parts.append({
+                'text': part,
+                'type': part_type,
+                'selected': part_type == 'name'
+            })
+        
+        return parsed_parts
+    
+    def _show_filename_parts_dialog(self, filename: str, current_search: str = '') -> tuple:
+        """显示文件名部分选择对话框，返回 (选中的搜索关键字, 是否确认)"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f'选择搜索关键字 - {filename}')
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 显示完整文件名
+        filename_label = QLabel(f'完整文件名: {filename}')
+        filename_label.setStyleSheet("font-weight: bold; color: #2980b9;")
+        filename_label.setWordWrap(True)
+        layout.addWidget(filename_label)
+        
+        layout.addWidget(QLabel('请选择要用于搜索的部分（勾选）:'))
+        
+        # 解析文件名
+        parts = self._parse_filename_parts(filename)
+        
+        # 创建部分选择区域
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        checkboxes = []
+        type_colors = {
+            'name': '#27ae60',
+            'year': '#e74c3c',
+            'quality': '#f39c12',
+            'episode': '#9b59b6',
+            'season': '#9b59b6',
+            'number': '#95a5a6'
+        }
+        type_names = {
+            'name': '名称',
+            'year': '年份',
+            'quality': '质量',
+            'episode': '集数',
+            'season': '季',
+            'number': '数字'
+        }
+        
+        for part in parts:
+            part_layout = QHBoxLayout()
+            
+            cb = QCheckBox(part['text'])
+            cb.setChecked(part['selected'])
+            
+            color = type_colors.get(part['type'], '#333333')
+            type_name = type_names.get(part['type'], '未知')
+            
+            type_label = QLabel(f'[{type_name}]')
+            type_label.setStyleSheet(f'color: {color}; font-weight: bold;')
+            
+            part_layout.addWidget(cb)
+            part_layout.addWidget(type_label)
+            part_layout.addStretch()
+            
+            checkboxes.append((cb, part))
+            scroll_layout.addLayout(part_layout)
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+        
+        # 搜索预览
+        preview_group = QGroupBox('搜索预览')
+        preview_layout = QVBoxLayout(preview_group)
+        
+        preview_label = QLabel()
+        preview_label.setStyleSheet("font-size: 14px; padding: 5px; background-color: #ecf0f1; border-radius: 3px;")
+        preview_layout.addWidget(preview_label)
+        
+        # 手动编辑框
+        edit_layout = QHBoxLayout()
+        edit_layout.addWidget(QLabel('手动编辑:'))
+        search_input = QLineEdit(current_search)
+        edit_layout.addWidget(search_input)
+        preview_layout.addLayout(edit_layout)
+        
+        layout.addWidget(preview_group)
+        
+        # 更新预览
+        def update_preview():
+            selected_parts = []
+            for cb, part in checkboxes:
+                if cb.isChecked():
+                    selected_parts.append(part['text'])
+            preview_text = ' '.join(selected_parts)
+            preview_label.setText(f'搜索关键字: {preview_text}')
+            search_input.setText(preview_text)
+        
+        # 连接复选框信号
+        for cb, part in checkboxes:
+            cb.stateChanged.connect(update_preview)
+        
+        update_preview()
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        
+        select_all_btn = QPushButton('全选名称')
+        select_name_btn = QPushButton('只选名称')
+        
+        def select_all_names():
+            for cb, part in checkboxes:
+                cb.setChecked(part['type'] == 'name')
+            update_preview()
+        
+        def select_only_name():
+            for cb, part in checkboxes:
+                cb.setChecked(part['type'] == 'name')
+            update_preview()
+        
+        select_all_btn.clicked.connect(lambda: [cb.setChecked(True) for cb, _ in checkboxes] or update_preview())
+        select_name_btn.clicked.connect(select_only_name)
+        
+        btn_layout.addWidget(select_all_btn)
+        btn_layout.addWidget(select_name_btn)
+        btn_layout.addStretch()
+        
+        ok_btn = QPushButton('确定搜索')
+        ok_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+        cancel_btn = QPushButton('跳过')
+        
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        result = {'keyword': None, 'confirmed': False}
+        
+        def on_ok():
+            result['keyword'] = search_input.text().strip()
+            result['confirmed'] = True
+            dialog.accept()
+        
+        def on_cancel():
+            dialog.reject()
+        
+        ok_btn.clicked.connect(on_ok)
+        cancel_btn.clicked.connect(on_cancel)
+        
+        # 搜索输入框回车确认
+        search_input.returnPressed.connect(on_ok)
+        
+        dialog.exec_()
+        
+        return result['keyword'], result['confirmed']
+    
+    def _show_match_selection_dialog(self, movie_name: str, candidates: list, search_title: str = '') -> tuple:
+        """显示匹配选择对话框，返回 (选择结果, 新搜索关键字或None)"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f'选择匹配 - {movie_name}')
+        dialog.setMinimumWidth(550)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        label = QLabel(f'电影 "{movie_name}" 找到多个匹配结果，请选择:')
+        layout.addWidget(label)
+        
+        # 创建候选列表
+        list_widget = QListWidget()
+        for i, candidate in enumerate(candidates):
+            title = getattr(candidate, 'title', '未知')
+            year = getattr(candidate, 'year', '')
+            overview = getattr(candidate, 'overview', '')[:100] + '...' if getattr(candidate, 'overview', '') else ''
+            item_text = f"{title} ({year})" if year else title
+            if overview:
+                item_text += f"\n{overview}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, candidate)
+            list_widget.addItem(item)
+        
+        list_widget.setCurrentRow(0)
+        layout.addWidget(list_widget)
+        
+        # 搜索关键字修改区域
+        search_group = QGroupBox('修改搜索关键字')
+        search_layout = QHBoxLayout(search_group)
+        
+        search_input = QLineEdit(movie_name)
+        search_layout.addWidget(QLabel('关键字:'))
+        search_layout.addWidget(search_input)
+        
+        search_btn = QPushButton('重新搜索')
+        search_layout.addWidget(search_btn)
+        
+        layout.addWidget(search_group)
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        
+        skip_btn = QPushButton('跳过此电影')
+        btn_layout.addWidget(skip_btn)
+        
+        btn_layout.addStretch()
+        
+        ok_btn = QPushButton('确定')
+        btn_layout.addWidget(ok_btn)
+        
+        cancel_btn = QPushButton('取消')
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        result = {'selected': None, 'new_search': None}
+        
+        # 点击列表项时自动更新搜索框
+        def on_item_clicked(item):
+            selected_candidate = item.data(Qt.UserRole)
+            if selected_candidate:
+                new_title = getattr(selected_candidate, 'title', '')
+                if new_title:
+                    search_input.setText(new_title)
+        
+        list_widget.itemClicked.connect(on_item_clicked)
+        
+        # 双击列表项直接确定
+        def on_item_double_clicked(item):
+            selected_candidate = item.data(Qt.UserRole)
+            if selected_candidate:
+                result['selected'] = selected_candidate
+                dialog.accept()
+        
+        list_widget.itemDoubleClicked.connect(on_item_double_clicked)
+        
+        def on_search():
+            new_keyword = search_input.text().strip()
+            if new_keyword:
+                result['new_search'] = new_keyword
+                dialog.done(2)  # 自定义返回码
+        
+        def on_skip():
+            dialog.reject()
+        
+        def on_accept():
+            current_item = list_widget.currentItem()
+            if current_item:
+                result['selected'] = current_item.data(Qt.UserRole)
+                dialog.accept()
+        
+        search_btn.clicked.connect(on_search)
+        skip_btn.clicked.connect(on_skip)
+        ok_btn.clicked.connect(on_accept)
+        
+        ret = dialog.exec_()
+        
+        if ret == 2:  # 重新搜索
+            return None, result['new_search']
+        elif ret == QDialog.Accepted:
+            return result['selected'], None
+        else:
+            return None, None
+    
+    def quick_scrape_movie(self):
+        """快捷刮削单个电影，使用和自动刮削一样的逻辑"""
+        if not hasattr(self, 'current_movie') or not self.current_movie:
+            QMessageBox.warning(self, '警告', '请先选择一个电影')
+            return
+        
+        movie = self.current_movie
+        self.log(f'开始快捷刮削: {movie.name}')
+        
+        # 创建进度对话框
+        progress_dialog = QDialog(self)
+        progress_dialog.setWindowTitle('快捷刮削')
+        progress_dialog.setMinimumWidth(400)
+        progress_dialog.setModal(True)
+        
+        layout = QVBoxLayout(progress_dialog)
+        
+        progress_label = QLabel('正在处理...')
+        layout.addWidget(progress_label)
+        
+        # 停止按钮
+        stop_btn = QPushButton('停止刮削')
+        stop_btn.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold;")
+        layout.addWidget(stop_btn)
+        
+        progress_bar = QProgressBar()
+        progress_bar.setMaximum(1)
+        progress_bar.setValue(0)
+        layout.addWidget(progress_bar)
+        
+        detail_label = QLabel('')
+        layout.addWidget(detail_label)
+        
+        # 显示进度对话框
+        progress_dialog.show()
+        
+        cancelled = False
+        
+        def on_stop():
+            nonlocal cancelled
+            cancelled = True
+            stop_btn.setText('正在停止...')
+            stop_btn.setEnabled(False)
+            QApplication.processEvents()
+        
+        stop_btn.clicked.connect(on_stop)
+        
+        if cancelled:
+            progress_dialog.close()
+            return
+        
+        progress_bar.setValue(0)
+        detail_label.setText(f'电影: {movie.name}')
+        QApplication.processEvents()
+        
+        # 提取年份和清理标题
+        year, clean_title = self._extract_year_from_title(movie.name)
+        
+        search_title = clean_title
+        
+        # 优先使用AI识别电影名
+        if self.ai_helper and self.ai_helper.is_configured():
+            detail_label.setText(f'AI识别中: {movie.name}')
+            QApplication.processEvents()
+            
+            ai_title, ai_year = self.ai_helper.identify_movie_name(movie.name)
+            
+            if ai_title:
+                search_title = ai_title
+                if ai_year:
+                    year = ai_year
+                print(f"AI识别结果: {ai_title} ({ai_year})")
+            else:
+                print(f"AI识别失败: {movie.name}")
+        
+        # 如果AI没配置或识别失败，且清理标题为空，让用户选择文件名部分
+        if not search_title:
+            progress_dialog.hide()
+            search_title, confirmed = self._show_filename_parts_dialog(movie.name, movie.name)
+            progress_dialog.show()
+            
+            if not confirmed or not search_title.strip():
+                progress_dialog.close()
+                return
+            
+            search_title = search_title.strip()
+            year, search_title = self._extract_year_from_title(search_title)
+        
+        detail_label.setText(f'搜索: {search_title} {f"({year})" if year else ""}')
+        QApplication.processEvents()
+        
+        # 搜索电影
+        results = self.api.search_multi(search_title)
+        
+        # 如果搜索结果为空，让用户选择文件名部分重新搜索
+        while not results:
+            progress_dialog.hide()
+            search_title, confirmed = self._show_filename_parts_dialog(movie.name, search_title)
+            progress_dialog.show()
+            
+            if not confirmed or not search_title.strip():
+                progress_dialog.close()
+                return
+            
+            search_title = search_title.strip()
+            year, search_title = self._extract_year_from_title(search_title)
+            
+            detail_label.setText(f'搜索: {search_title} {f"({year})" if year else ""}')
+            QApplication.processEvents()
+            
+            results = self.api.search_multi(search_title)
+        
+        if not results:
+            progress_dialog.close()
+            return
+        
+        # 找到最佳匹配
+        best_match, need_selection, candidates = self._find_best_match(results, year)
+        
+        if need_selection and candidates:
+            # 需要用户选择，尝试AI辅助选择
+            ai_selected = False
+            if self.ai_helper and self.ai_helper.is_configured():
+                detail_label.setText(f'AI辅助选择中: {movie.name}')
+                QApplication.processEvents()
+                
+                ai_title, ai_year = self.ai_helper.identify_movie_name(movie.name)
+                
+                if ai_title and ai_year:
+                    print(f"AI辅助选择: {ai_title} ({ai_year})")
+                    # 在候选列表中找年份匹配的
+                    year_matches = [c for c in candidates if str(getattr(c, 'year', '')) == str(ai_year)]
+                    if len(year_matches) == 1:
+                        best_match = year_matches[0]
+                        need_selection = False
+                        ai_selected = True
+                        print(f"AI自动选择: {best_match.title} ({best_match.year})")
+            
+            if not ai_selected:
+                # 需要用户选择
+                progress_dialog.hide()
+                selected, new_search = self._show_match_selection_dialog(movie.name, candidates, search_title)
+                
+                if new_search:
+                    # 用户要求重新搜索
+                    search_title = new_search
+                    year, search_title = self._extract_year_from_title(search_title)
+                    progress_dialog.show()
+                    
+                    detail_label.setText(f'重新搜索: {search_title} {f"({year})" if year else ""}')
+                    QApplication.processEvents()
+                    
+                    results = self.api.search_multi(search_title)
+                    
+                    if results:
+                        best_match, _, _ = self._find_best_match(results, year)
+                    else:
+                        QMessageBox.information(self, '提示', f'搜索 "{search_title}" 无结果')
+                        progress_dialog.close()
+                        return
+                elif selected:
+                    best_match = selected
+                    progress_dialog.show()
+                else:
+                    progress_dialog.show()
+                    progress_dialog.close()
+                    return
+        
+        if best_match:
+            # 更新电影信息
+            movie.title = best_match.title
+            movie.year = best_match.year
+            movie.overview = best_match.overview
+            movie.vote_average = best_match.vote_average
+            movie.tmdb_id = best_match.id
+            movie.media_type = best_match.media_type
+            movie.matched = True
+            movie.info = {
+                'poster_path': getattr(best_match, 'poster_path', None),
+                'backdrop_path': getattr(best_match, 'backdrop_path', None),
+                'logo_path': getattr(best_match, 'logo_path', None),
+                'original_title': getattr(best_match, 'original_title', ''),
+            }
+            
+            # 下载图片和保存NFO
+            detail_label.setText(f'下载资源: {movie.title}')
+            QApplication.processEvents()
+            
+            try:
+                # 获取电影目录
+                movie_dir = os.path.dirname(movie.path)
+                
+                # 获取详细信息
+                if movie.tmdb_id:
+                    detail_info = self.api.get_movie_details(movie.tmdb_id)
+                    if detail_info:
+                        movie.info.update(detail_info)
+                        movie.genres = [g.get('name', '') for g in detail_info.get('genres', [])]
+                
+                # 保存NFO - 使用完整的info数据
+                info = movie.info.copy()
+                info.update({
+                    'title': movie.title,
+                    'year': movie.year,
+                    'overview': movie.overview,
+                    'vote_average': movie.vote_average,
+                    'tmdb_id': movie.tmdb_id,
+                    'media_type': movie.media_type,
+                    'genres': movie.genres,
+                })
+                self.scanner.save_nfo(movie, info, movie_dir)
+                
+                # 下载图片
+                self._download_movie_images(movie, movie_dir)
+                
+                progress_bar.setValue(1)
+                QMessageBox.information(self, '完成', f'刮削完成: {movie.title}')
+            except Exception as e:
+                print(f"处理电影 {movie.name} 时出错: {e}")
+                QMessageBox.warning(self, '错误', f'处理失败: {e}')
+        else:
+            QMessageBox.warning(self, '提示', '未找到匹配的电影')
+        
+        # 刷新列表
+        self.media_tree.clear()
+        for m in self.local_movies:
+            self._add_movie_to_tree(m)
+        for s in self.local_series:
+            self._add_series_to_tree(s)
+        
+        progress_dialog.close()
+    
     def auto_match_all(self):
-        if not self.local_movies:
+        # 检查是否有电影或电视剧
+        has_movies = bool(self.local_movies)
+        has_series = bool(self.local_series)
+        
+        if not has_movies and not has_series:
             QMessageBox.warning(self, '警告', '请先扫描目录')
             return
         
-        for movie in self.local_movies:
-            if not movie.matched and movie.title:
-                results = self.api.search_multi(movie.title)
-                if results:
-                    best_match = results[0]
-                    movie.title = best_match.title
-                    movie.year = best_match.year
-                    movie.overview = best_match.overview
-                    movie.vote_average = best_match.vote_average
-                    movie.tmdb_id = best_match.id
-                    movie.media_type = best_match.media_type
-                    movie.matched = True
+        self.log('开始自动刮削...')
         
+        # 如果两者都有，询问用户要处理哪种类型
+        process_type = None
+        if has_movies and has_series:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle('选择刮削类型')
+            msg_box.setText('检测到电影和电视剧，请选择要刮削的类型：')
+            btn_movie = msg_box.addButton('电影', QMessageBox.ActionRole)
+            btn_series = msg_box.addButton('电视剧', QMessageBox.ActionRole)
+            btn_both = msg_box.addButton('全部', QMessageBox.ActionRole)
+            msg_box.addButton('取消', QMessageBox.RejectRole)
+            msg_box.exec_()
+            
+            clicked_btn = msg_box.clickedButton()
+            if clicked_btn == btn_movie:
+                process_type = 'movie'
+            elif clicked_btn == btn_series:
+                process_type = 'series'
+            elif clicked_btn == btn_both:
+                process_type = 'all'
+            else:
+                return
+        elif has_movies:
+            process_type = 'movie'
+        else:
+            process_type = 'series'
+        
+        # 获取选中的项目（如果有选择的话）
+        selected_items = self.media_tree.selectedItems()
+        movies_to_process = []
+        series_to_process = []
+        
+        if selected_items:
+            for item in selected_items:
+                item_data = item.data(0, Qt.UserRole)
+                if item_data and isinstance(item_data, dict):
+                    if item_data.get('type') == 'movie' and process_type in ['movie', 'all']:
+                        movie = item_data.get('data')
+                        if movie and not movie.matched:
+                            movies_to_process.append(movie)
+                    elif item_data.get('type') == 'series' and process_type in ['series', 'all']:
+                        series = item_data.get('data')
+                        if series and not series.matched:
+                            series_to_process.append(series)
+        else:
+            if process_type in ['movie', 'all']:
+                movies_to_process = [m for m in self.local_movies if not m.matched]
+            if process_type in ['series', 'all']:
+                series_to_process = [s for s in self.local_series if not s.matched]
+        
+        if not movies_to_process and not series_to_process:
+            QMessageBox.information(self, '提示', '没有需要匹配的内容')
+            return
+        
+        total_count = len(movies_to_process) + len(series_to_process)
+        
+        # 创建进度对话框
+        progress_dialog = QDialog(self)
+        progress_dialog.setWindowTitle('自动刮削进度')
+        progress_dialog.setMinimumWidth(400)
+        progress_dialog.setModal(True)
+        
+        layout = QVBoxLayout(progress_dialog)
+        
+        progress_label = QLabel('准备开始...')
+        layout.addWidget(progress_label)
+        
+        # 停止按钮
+        stop_btn = QPushButton('停止刮削')
+        stop_btn.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold;")
+        layout.addWidget(stop_btn)
+        
+        progress_bar = QProgressBar()
+        progress_bar.setMaximum(total_count)
+        progress_bar.setValue(0)
+        layout.addWidget(progress_bar)
+        
+        detail_label = QLabel('')
+        layout.addWidget(detail_label)
+        
+        # 显示进度对话框
+        progress_dialog.show()
+        
+        cancelled = False
+        
+        def on_stop():
+            nonlocal cancelled
+            cancelled = True
+            stop_btn.setText('正在停止...')
+            stop_btn.setEnabled(False)
+            QApplication.processEvents()
+        
+        stop_btn.clicked.connect(on_stop)
+        
+        matched_count = 0
+        skipped_count = 0
+        current_index = 0
+        
+        # 处理电影
+        for movie in movies_to_process:
+            if cancelled:
+                break
+            
+            progress_bar.setValue(current_index)
+            progress_label.setText(f'正在处理: {current_index + 1}/{total_count}')
+            detail_label.setText(f'电影: {movie.name}')
+            QApplication.processEvents()
+            current_index += 1
+            
+            # 提取年份和清理标题
+            year, clean_title = self._extract_year_from_title(movie.name)
+            
+            search_title = clean_title
+            ai_used = False
+            
+            # 优先使用AI识别电影名
+            if self.ai_helper and self.ai_helper.is_configured():
+                detail_label.setText(f'AI识别中: {movie.name}')
+                QApplication.processEvents()
+                
+                ai_title, ai_year = self.ai_helper.identify_movie_name(movie.name)
+                
+                if ai_title:
+                    search_title = ai_title
+                    if ai_year:
+                        year = ai_year
+                    ai_used = True
+                    print(f"AI识别结果: {ai_title} ({ai_year})")
+                else:
+                    print(f"AI识别失败: {movie.name}")
+            
+            # 如果AI没配置或识别失败，且清理标题为空，让用户选择文件名部分
+            if not search_title:
+                progress_dialog.hide()
+                search_title, confirmed = self._show_filename_parts_dialog(movie.name, movie.name)
+                progress_dialog.show()
+                
+                if not confirmed or not search_title.strip():
+                    skipped_count += 1
+                    continue
+                
+                search_title = search_title.strip()
+                year, search_title = self._extract_year_from_title(search_title)
+            
+            detail_label.setText(f'搜索: {search_title} {f"({year})" if year else ""}')
+            QApplication.processEvents()
+            
+            # 搜索电影
+            results = self.api.search_multi(search_title)
+            
+            # 如果搜索结果为空，让用户选择文件名部分重新搜索
+            while not results:
+                progress_dialog.hide()
+                search_title, confirmed = self._show_filename_parts_dialog(movie.name, search_title)
+                progress_dialog.show()
+                
+                if not confirmed or not search_title.strip():
+                    skipped_count += 1
+                    break
+                
+                search_title = search_title.strip()
+                year, search_title = self._extract_year_from_title(search_title)
+                
+                detail_label.setText(f'搜索: {search_title} {f"({year})" if year else ""}')
+                QApplication.processEvents()
+                
+                results = self.api.search_multi(search_title)
+            
+            if not results:
+                continue
+            
+            # 找到最佳匹配
+            best_match, need_selection, candidates = self._find_best_match(results, year)
+            
+            if need_selection and candidates:
+                # 需要用户选择，尝试AI辅助选择
+                ai_selected = False
+                if self.ai_helper and self.ai_helper.is_configured():
+                    detail_label.setText(f'AI辅助选择中: {movie.name}')
+                    QApplication.processEvents()
+                    
+                    ai_title, ai_year = self.ai_helper.identify_movie_name(movie.name)
+                    
+                    if ai_title and ai_year:
+                        print(f"AI辅助选择: {ai_title} ({ai_year})")
+                        # 在候选列表中找年份匹配的
+                        year_matches = [c for c in candidates if str(getattr(c, 'year', '')) == str(ai_year)]
+                        if len(year_matches) == 1:
+                            best_match = year_matches[0]
+                            need_selection = False
+                            ai_selected = True
+                            print(f"AI自动选择: {best_match.title} ({best_match.year})")
+                
+                if not ai_selected:
+                    # 需要用户选择
+                    progress_dialog.hide()
+                    selected, new_search = self._show_match_selection_dialog(movie.name, candidates, search_title)
+                    
+                    if new_search:
+                        # 用户要求重新搜索
+                        search_title = new_search
+                        year, search_title = self._extract_year_from_title(search_title)
+                        progress_dialog.show()
+                        
+                        detail_label.setText(f'重新搜索: {search_title} {f"({year})" if year else ""}')
+                        QApplication.processEvents()
+                        
+                        results = self.api.search_multi(search_title)
+                        
+                        if results:
+                            best_match, need_selection2, candidates2 = self._find_best_match(results, year)
+                            if best_match and not need_selection2:
+                                pass  # 已找到唯一匹配
+                            elif candidates2:
+                                progress_dialog.hide()
+                                selected2, new_search2 = self._show_match_selection_dialog(movie.name, candidates2, search_title)
+                                progress_dialog.show()
+                                
+                                if new_search2:
+                                    # 再次重新搜索
+                                    search_title = new_search2
+                                    year, search_title = self._extract_year_from_title(search_title)
+                                    results = self.api.search_multi(search_title)
+                                    if results:
+                                        best_match, _, _ = self._find_best_match(results, year)
+                                elif selected2:
+                                    best_match = selected2
+                                else:
+                                    skipped_count += 1
+                                    continue
+                            else:
+                                skipped_count += 1
+                                continue
+                        else:
+                            QMessageBox.information(self, '提示', f'搜索 "{search_title}" 无结果')
+                            skipped_count += 1
+                            continue
+                    elif selected:
+                        best_match = selected
+                    else:
+                        progress_dialog.show()
+                        skipped_count += 1
+                        continue
+            
+            if best_match:
+                # 更新电影信息
+                movie.title = best_match.title
+                movie.year = best_match.year
+                movie.overview = best_match.overview
+                movie.vote_average = best_match.vote_average
+                movie.tmdb_id = best_match.id
+                movie.media_type = best_match.media_type
+                movie.matched = True
+                movie.info = {
+                    'poster_path': getattr(best_match, 'poster_path', None),
+                    'backdrop_path': getattr(best_match, 'backdrop_path', None),
+                    'logo_path': getattr(best_match, 'logo_path', None),
+                    'original_title': getattr(best_match, 'original_title', ''),
+                }
+                
+                # 下载图片和保存NFO
+                detail_label.setText(f'下载资源: {movie.title}')
+                QApplication.processEvents()
+                
+                try:
+                    # 获取电影目录
+                    movie_dir = os.path.dirname(movie.path)
+                    
+                    # 获取详细信息
+                    if movie.tmdb_id:
+                        detail_info = self.api.get_movie_details(movie.tmdb_id)
+                        if detail_info:
+                            movie.info.update(detail_info)
+                            movie.genres = [g.get('name', '') for g in detail_info.get('genres', [])]
+                    
+                    # 保存NFO - 使用完整的info数据
+                    info = movie.info.copy()
+                    info.update({
+                        'title': movie.title,
+                        'year': movie.year,
+                        'overview': movie.overview,
+                        'vote_average': movie.vote_average,
+                        'tmdb_id': movie.tmdb_id,
+                        'media_type': movie.media_type,
+                        'genres': movie.genres,
+                    })
+                    self.scanner.save_nfo(movie, info, movie_dir)
+                    
+                    # 下载图片
+                    self._download_movie_images(movie, movie_dir)
+                    
+                    matched_count += 1
+                except Exception as e:
+                    print(f"处理电影 {movie.name} 时出错: {e}")
+                    skipped_count += 1
+            else:
+                skipped_count += 1
+        
+        # 处理电视剧
+        for series in series_to_process:
+            if cancelled:
+                break
+            
+            progress_bar.setValue(current_index)
+            progress_label.setText(f'正在处理: {current_index + 1}/{total_count}')
+            detail_label.setText(f'电视剧: {series.name}')
+            QApplication.processEvents()
+            current_index += 1
+            
+            # 提取年份和清理标题
+            year, clean_title = self._extract_year_from_title(series.name)
+            
+            search_title = clean_title
+            
+            # 优先使用AI识别电视剧名
+            if self.ai_helper and self.ai_helper.is_configured():
+                detail_label.setText(f'AI识别中: {series.name}')
+                QApplication.processEvents()
+                
+                ai_title, ai_year = self.ai_helper.identify_series_name(series.name)
+                
+                if ai_title:
+                    search_title = ai_title
+                    if ai_year:
+                        year = ai_year
+                    print(f"AI识别电视剧结果: {ai_title} ({ai_year})")
+                else:
+                    print(f"AI识别电视剧失败: {series.name}")
+            
+            # 如果AI没配置或识别失败，且清理标题为空，让用户手动输入
+            if not search_title:
+                progress_dialog.hide()
+                search_title, ok = QInputDialog.getText(
+                    self, 
+                    '手动输入电视剧名', 
+                    f'无法识别电视剧名:\n{series.name}\n\n请输入正确的电视剧名:',
+                    QLineEdit.Normal,
+                    series.name
+                )
+                progress_dialog.show()
+                
+                if not ok or not search_title.strip():
+                    skipped_count += 1
+                    continue
+                
+                search_title = search_title.strip()
+                year, search_title = self._extract_year_from_title(search_title)
+            
+            detail_label.setText(f'搜索: {search_title} {f"({year})" if year else ""}')
+            QApplication.processEvents()
+            
+            # 搜索电视剧
+            results = self.api.search_tv(search_title)
+            
+            # 如果搜索结果为空，让用户重新输入
+            while not results:
+                progress_dialog.hide()
+                search_title, ok = QInputDialog.getText(
+                    self, 
+                    '搜索无结果', 
+                    f'搜索无结果:\n{search_title}\n\n请重新输入电视剧名:',
+                    QLineEdit.Normal,
+                    search_title
+                )
+                progress_dialog.show()
+                
+                if not ok or not search_title.strip():
+                    skipped_count += 1
+                    break
+                
+                search_title = search_title.strip()
+                year, search_title = self._extract_year_from_title(search_title)
+                
+                detail_label.setText(f'搜索: {search_title} {f"({year})" if year else ""}')
+                QApplication.processEvents()
+                
+                results = self.api.search_tv(search_title)
+            
+            if not results:
+                continue
+            
+            # 找到最佳匹配
+            best_match = None
+            if len(results) == 1:
+                best_match = results[0]
+            elif year:
+                # 尝试按年份匹配
+                year_matches = [r for r in results if str(getattr(r, 'year', '')) == str(year)]
+                if len(year_matches) == 1:
+                    best_match = year_matches[0]
+            
+            if not best_match:
+                # 需要用户选择
+                progress_dialog.hide()
+                selected, new_search = self._show_series_selection_dialog(series.name, results, search_title)
+                
+                if new_search:
+                    search_title = new_search
+                    year, search_title = self._extract_year_from_title(search_title)
+                    progress_dialog.show()
+                    
+                    detail_label.setText(f'重新搜索: {search_title} {f"({year})" if year else ""}')
+                    QApplication.processEvents()
+                    
+                    results = self.api.search_tv(search_title)
+                    if results:
+                        if len(results) == 1:
+                            best_match = results[0]
+                        else:
+                            progress_dialog.hide()
+                            selected2, _ = self._show_series_selection_dialog(series.name, results, search_title)
+                            progress_dialog.show()
+                            if selected2:
+                                best_match = selected2
+                elif selected:
+                    best_match = selected
+                    progress_dialog.show()
+                else:
+                    progress_dialog.show()
+                    skipped_count += 1
+                    continue
+            
+            if best_match:
+                # 更新电视剧信息
+                series.title = best_match.title
+                series.year = best_match.year
+                series.overview = best_match.overview
+                series.vote_average = best_match.vote_average
+                series.tmdb_id = best_match.id
+                series.matched = True
+                series.info = {
+                    'poster_path': getattr(best_match, 'poster_path', None),
+                    'backdrop_path': getattr(best_match, 'backdrop_path', None),
+                }
+                
+                # 下载图片和保存NFO
+                detail_label.setText(f'下载资源: {series.title}')
+                QApplication.processEvents()
+                
+                try:
+                    series_dir = series.path
+                    
+                    # 获取详细信息
+                    if series.tmdb_id:
+                        detail_info = self.api.get_tv_details(series.tmdb_id)
+                        if detail_info:
+                            series.info.update(detail_info)
+                            series.genres = [g.get('name', '') for g in detail_info.get('genres', [])]
+                            series.seasons_info = detail_info.get('seasons', [])
+                    
+                    # 保存NFO - 使用完整的info数据
+                    info = series.info.copy()
+                    info.update({
+                        'title': series.title,
+                        'year': series.year,
+                        'overview': series.overview,
+                        'vote_average': series.vote_average,
+                        'tmdb_id': series.tmdb_id,
+                        'genres': series.genres,
+                    })
+                    self.scanner.save_series_nfo(series, info, series_dir)
+                    
+                    # 下载图片
+                    self._download_series_images(series, series_dir)
+                    
+                    matched_count += 1
+                except Exception as e:
+                    print(f"处理电视剧 {series.name} 时出错: {e}")
+                    skipped_count += 1
+            else:
+                skipped_count += 1
+        
+        progress_dialog.close()
+        
+        # 刷新列表
         self.media_tree.clear()
         for movie in self.local_movies:
-            self.add_movie_to_list(movie)
+            self._add_movie_to_tree(movie)
+        for series in self.local_series:
+            self._add_series_to_tree(series)
         
-        QMessageBox.information(self, '完成', '自动匹配完成')
+        self.log(f'自动刮削完成 - 匹配成功: {matched_count}, 跳过: {skipped_count}')
+        QMessageBox.information(self, '完成', f'自动刮削完成\n匹配成功: {matched_count}\n跳过: {skipped_count}')
+    
+    def _show_series_selection_dialog(self, original_name: str, results: list, current_search: str):
+        """显示电视剧选择对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('选择电视剧')
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        layout.addWidget(QLabel(f'原名称: {original_name}'))
+        layout.addWidget(QLabel(f'搜索: {current_search}'))
+        layout.addWidget(QLabel('请选择正确的电视剧:'))
+        
+        list_widget = QListWidget()
+        for result in results:
+            item_text = f"{result.title} ({result.year})" if result.year else result.title
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, result)
+            list_widget.addItem(item)
+        
+        list_widget.setCurrentRow(0)
+        layout.addWidget(list_widget)
+        
+        # 搜索框
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel('修改关键字:'))
+        search_input = QLineEdit(current_search)
+        search_layout.addWidget(search_input)
+        layout.addLayout(search_layout)
+        
+        result = {'selected': None, 'new_search': None}
+        
+        # 点击列表项时自动更新搜索框
+        def on_item_clicked(item):
+            selected_result = item.data(Qt.UserRole)
+            if selected_result:
+                new_title = selected_result.title
+                search_input.setText(new_title)
+        
+        list_widget.itemClicked.connect(on_item_clicked)
+        
+        # 双击列表项直接确定
+        def on_item_double_clicked(item):
+            selected_result = item.data(Qt.UserRole)
+            if selected_result:
+                result['selected'] = selected_result
+                dialog.accept()
+        
+        list_widget.itemDoubleClicked.connect(on_item_double_clicked)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton('确定')
+        skip_btn = QPushButton('跳过')
+        search_btn = QPushButton('重新搜索')
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(search_btn)
+        btn_layout.addWidget(skip_btn)
+        layout.addLayout(btn_layout)
+        
+        def on_search():
+            result['new_search'] = search_input.text().strip()
+            dialog.done(2)  # 自定义返回码
+        
+        def on_skip():
+            dialog.reject()
+        
+        def on_accept():
+            current_item = list_widget.currentItem()
+            if current_item:
+                result['selected'] = current_item.data(Qt.UserRole)
+                dialog.accept()
+        
+        search_btn.clicked.connect(on_search)
+        skip_btn.clicked.connect(on_skip)
+        ok_btn.clicked.connect(on_accept)
+        
+        ret = dialog.exec_()
+        
+        if ret == 2:  # 重新搜索
+            return None, result['new_search']
+        elif ret == QDialog.Accepted:
+            return result['selected'], None
+        else:
+            return None, None
+    
+    def _download_movie_images(self, movie: LocalMovie, directory: str):
+        """下载电影图片"""
+        try:
+            self.log(f'下载电影图片: {movie.title}')
+            # 下载海报
+            poster_path = movie.info.get('poster_path')
+            if poster_path:
+                poster_url = self.api.get_poster_url(poster_path, 'w500')
+                if poster_url:
+                    poster_save_path = os.path.join(directory, 'poster.jpg')
+                    self.api.download_image(poster_url, poster_save_path)
+                    movie.poster_path = poster_save_path
+                    self.log(f'  下载海报: {poster_save_path}')
+            
+            # 下载背景图
+            backdrop_path = movie.info.get('backdrop_path')
+            if backdrop_path:
+                backdrop_url = self.api.get_backdrop_url(backdrop_path, 'w1280')
+                if backdrop_url:
+                    fanart_save_path = os.path.join(directory, 'fanart.jpg')
+                    self.api.download_image(backdrop_url, fanart_save_path)
+                    backdrop_save_path = os.path.join(directory, 'backdrop.jpg')
+                    self.api.download_image(backdrop_url, backdrop_save_path)
+                    self.log(f'  下载背景图: {backdrop_save_path}')
+            
+            # 下载logo
+            logo_path = movie.info.get('logo_path')
+            if logo_path:
+                logo_url = self.api.get_logo_url(logo_path, 'w500')
+                if logo_url:
+                    logo_save_path = os.path.join(directory, 'logo.png')
+                    self.api.download_image(logo_url, logo_save_path)
+                    clearlogo_save_path = os.path.join(directory, 'clearlogo.png')
+                    self.api.download_image(logo_url, clearlogo_save_path)
+        except Exception as e:
+            print(f"下载图片错误: {e}")
+    
+    def _download_series_images(self, series, directory: str):
+        """下载电视剧图片"""
+        try:
+            self.log(f'下载电视剧图片: {series.title}')
+            # 下载海报
+            poster_path = series.info.get('poster_path')
+            if poster_path:
+                poster_url = self.api.get_poster_url(poster_path, 'w500')
+                if poster_url:
+                    poster_save_path = os.path.join(directory, 'poster.jpg')
+                    self.api.download_image(poster_url, poster_save_path)
+                    series.poster_path = poster_save_path
+                    self.log(f'  下载海报: {poster_save_path}')
+            
+            # 下载背景图
+            backdrop_path = series.info.get('backdrop_path')
+            if backdrop_path:
+                backdrop_url = self.api.get_backdrop_url(backdrop_path, 'w1280')
+                if backdrop_url:
+                    fanart_save_path = os.path.join(directory, 'fanart.jpg')
+                    self.api.download_image(backdrop_url, fanart_save_path)
+                    backdrop_save_path = os.path.join(directory, 'backdrop.jpg')
+                    self.api.download_image(backdrop_url, backdrop_save_path)
+                    self.log(f'  下载背景图: {backdrop_save_path}')
+            
+            # 下载季海报
+            seasons_info = getattr(series, 'seasons_info', [])
+            for season_info in seasons_info:
+                season_number = season_info.get('season_number', 0)
+                season_poster_path = season_info.get('poster_path')
+                if season_poster_path:
+                    season_poster_url = self.api.get_poster_url(season_poster_path, 'w500')
+                    if season_poster_url:
+                        season_poster_save_path = os.path.join(directory, f'season{season_number:02d}-poster.jpg')
+                        self.api.download_image(season_poster_url, season_poster_save_path)
+                        self.log(f'  下载季{season_number}海报: {season_poster_save_path}')
+        except Exception as e:
+            self.log(f'下载电视剧图片错误: {e}')
+            print(f"下载电视剧图片错误: {e}")
     
     def save_all_movies(self):
         for movie in self.local_movies:
@@ -3912,13 +5320,68 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             QMessageBox.warning(self, '失败', '保存NFO文件失败')
 
     def show_settings(self):
-        dialog = SettingsDialog(self, self.api, self.config_file)
+        dialog = SettingsDialog(self, self.api, self.config_file, self.ai_helper)
         dialog.exec_()
     
     def check_for_updates(self):
         """手动检查更新"""
         if hasattr(self, 'auto_updater'):
             self.auto_updater.check_for_updates(silent=False)
+    
+    def log(self, message: str):
+        """记录日志"""
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_entry = f"[{timestamp}] {message}"
+        self.log_messages.append(log_entry)
+        print(log_entry)
+    
+    def show_log(self):
+        """显示日志对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('运行日志')
+        dialog.setMinimumWidth(int(600 * self.scale_factor))
+        dialog.setMinimumHeight(int(400 * self.scale_factor))
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 日志文本框
+        log_text = QTextEdit()
+        log_text.setReadOnly(True)
+        log_text.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
+        
+        if self.log_messages:
+            log_text.setPlainText('\n'.join(self.log_messages))
+        else:
+            log_text.setPlainText('暂无日志记录')
+        
+        layout.addWidget(log_text)
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        
+        clear_btn = QPushButton('清空日志')
+        clear_btn.clicked.connect(lambda: self._clear_log(log_text))
+        btn_layout.addWidget(clear_btn)
+        
+        copy_btn = QPushButton('复制全部')
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(log_text.toPlainText()))
+        btn_layout.addWidget(copy_btn)
+        
+        btn_layout.addStretch()
+        
+        close_btn = QPushButton('关闭')
+        close_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        dialog.exec_()
+    
+    def _clear_log(self, log_text: QTextEdit):
+        """清空日志"""
+        self.log_messages.clear()
+        log_text.setPlainText('暂无日志记录')
     
     def show_about(self):
         about_dialog = QDialog(self)
@@ -3948,7 +5411,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         app_name.setFont(QFont('Microsoft YaHei', int(16 * self.scale_factor), QFont.Bold))
         info_layout.addWidget(app_name)
         
-        version = QLabel('版本: 1.1.0')
+        version = QLabel('版本: 1.1.5')
         version.setStyleSheet("color: #666666;")
         info_layout.addWidget(version)
         
@@ -3963,7 +5426,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
         main_layout.addWidget(line)
         
         # 描述
-        description = QLabel('一个功能强大的电影元数据管理工具\n\n- 扫描本地电影\n- 自动匹配TMDB元数据\n- 管理电影封面和简介\n- 支持NFO文件解析\n- 批量操作功能\n- 支持电视剧扫描')
+        description = QLabel('一个功能强大的电影元数据管理工具\n\n- 扫描本地电影\n- 自动刮削TMDB元数据\n- 管理电影封面和简介\n- 支持NFO文件解析\n- 批量操作功能\n- 支持电视剧扫描')
         description.setAlignment(Qt.AlignCenter)
         description.setWordWrap(True)
         main_layout.addWidget(description)
@@ -4358,10 +5821,11 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{width: 0px;}}
             QMessageBox.critical(self, '错误', f'生成失败: {str(e)}')
 
 class SettingsDialog(QDialog):
-    def __init__(self, parent, api: TMDBAPI, config_file: str):
+    def __init__(self, parent, api: TMDBAPI, config_file: str, ai_helper):
         super().__init__(parent)
         self.api = api
         self.config_file = config_file
+        self.ai_helper = ai_helper
         
         screen = QApplication.primaryScreen()
         if screen:
@@ -4390,6 +5854,44 @@ class SettingsDialog(QDialog):
         api_layout.addWidget(test_btn)
         
         layout.addWidget(api_group)
+        
+        ai_group = QGroupBox('AI 辅助识别设置 (硅基流动)')
+        ai_layout = QVBoxLayout(ai_group)
+        
+        ai_layout.addWidget(QLabel('硅基流动 API Key:'))
+        self.ai_key_input = QLineEdit()
+        if self.ai_helper and self.ai_helper.api_key:
+            self.ai_key_input.setText(self.ai_helper.api_key)
+        self.ai_key_input.setEchoMode(QLineEdit.Password)
+        self.ai_key_input.setPlaceholderText('用于AI识别电影名称，可选')
+        ai_layout.addWidget(self.ai_key_input)
+        
+        # API地址设置
+        ai_layout.addWidget(QLabel('API 地址:'))
+        self.ai_base_url_input = QLineEdit()
+        if self.ai_helper and hasattr(self.ai_helper, 'base_url'):
+            self.ai_base_url_input.setText(self.ai_helper.base_url)
+        else:
+            self.ai_base_url_input.setText('https://api.siliconflow.cn/v1')
+        self.ai_base_url_input.setPlaceholderText('例如: https://api.siliconflow.cn/v1')
+        ai_layout.addWidget(self.ai_base_url_input)
+        
+        # 模型设置
+        ai_layout.addWidget(QLabel('模型名称:'))
+        self.ai_model_input = QLineEdit()
+        if self.ai_helper and hasattr(self.ai_helper, 'model'):
+            self.ai_model_input.setText(self.ai_helper.model)
+        else:
+            self.ai_model_input.setText('Qwen/Qwen2.5-7B-Instruct')
+        self.ai_model_input.setPlaceholderText('例如: Qwen/Qwen2.5-7B-Instruct')
+        ai_layout.addWidget(self.ai_model_input)
+        
+        ai_info = QLabel('提示: 配置硅基流动 API Key后，自动刮削时可使用AI识别电影名称\n获取地址: https://cloud.siliconflow.cn/')
+        ai_info.setStyleSheet("color: #666666; font-size: 11px;")
+        ai_info.setWordWrap(True)
+        ai_layout.addWidget(ai_info)
+        
+        layout.addWidget(ai_group)
         
         proxy_group = QGroupBox('代理设置')
         proxy_layout = QGridLayout(proxy_group)
@@ -4565,6 +6067,9 @@ class SettingsDialog(QDialog):
     def save_settings(self):
         config = {
             'api_key': self.api_key_input.text().strip(),
+            'ai_api_key': self.ai_key_input.text().strip(),
+            'ai_base_url': self.ai_base_url_input.text().strip(),
+            'ai_model': self.ai_model_input.text().strip(),
             'proxy': {
                 'type': self.proxy_type.currentText().lower() if self.proxy_type.currentIndex() > 0 else '',
                 'host': self.proxy_host.text().strip(),
@@ -4581,6 +6086,15 @@ class SettingsDialog(QDialog):
             self.api.set_api_key(config['api_key'])
             if config['proxy']['type']:
                 self.api.set_proxy(config['proxy'])
+            
+            if self.ai_helper:
+                self.ai_helper.set_api_key(config['ai_api_key'])
+                self.ai_helper.set_base_url(config['ai_base_url'])
+                self.ai_helper.set_model(config['ai_model'])
+            
+            # 记录日志
+            if hasattr(self, 'log'):
+                self.log('设置已保存')
             
             QMessageBox.information(self, '成功', '设置已保存')
             self.accept()
